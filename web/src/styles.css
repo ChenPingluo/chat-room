@@ -1,0 +1,151 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f3f4f6;
+  --panel: #fff;
+  --text: #1b1e23;
+  --muted: #667085;
+  --line: #e4e7ec;
+  --accent: #0f6e6e;
+  --accent-2: #0c5858;
+  --danger: #a33b3b;
+  --mine: #e5f4f3;
+  --shadow: 0 8px 24px rgba(16, 24, 40, 0.08);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #121416;
+    --panel: #1c2024;
+    --text: #e8eaed;
+    --muted: #9aa3ad;
+    --line: #2c333a;
+    --accent: #3aafa9;
+    --accent-2: #2b8f8a;
+    --danger: #e07a7a;
+    --mine: #1a3332;
+    --shadow: none;
+  }
+}
+* { box-sizing: border-box; }
+html, body, #app { height: 100%; }
+body {
+  margin: 0;
+  font: 15px/1.45 ui-sans-serif, system-ui, sans-serif;
+  background: var(--bg);
+  color: var(--text);
+}
+button, input, textarea, select { font: inherit; color: inherit; }
+button {
+  background: var(--accent);
+  color: white;
+  border: 0;
+  border-radius: 8px;
+  padding: 8px 12px;
+  cursor: pointer;
+}
+button:disabled { opacity: 0.55; cursor: default; }
+button.pic { background: transparent; border: 0; padding: 0; }
+button.ghost, button.danger {
+  background: transparent;
+  color: inherit;
+  border: 1px solid var(--line);
+}
+button.danger { color: var(--danger); }
+input, textarea, select {
+  width: 100%;
+  padding: 8px 10px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+textarea { resize: vertical; min-height: 44px; }
+form, .stack { display: flex; flex-direction: column; gap: 10px; }
+.card {
+  width: min(420px, calc(100% - 24px));
+  margin: 8vh auto;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+.muted { color: var(--muted); }
+.error { color: var(--danger); min-height: 1.2em; }
+.row { display: flex; gap: 8px; align-items: center; }
+.row > * { min-width: 0; }
+.grow { flex: 1; }
+.app { height: 100%; display: flex; flex-direction: column; }
+.top {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--line);
+  background: var(--panel);
+}
+.top nav { display: flex; gap: 6px; }
+.top button.tab { background: transparent; color: inherit; border: 0; }
+.top button.tab.on { background: var(--accent); color: white; }
+.body { flex: 1; display: flex; min-height: 0; }
+.side, .chat, .page {
+  min-width: 0;
+  min-height: 0;
+}
+.side {
+  width: 320px;
+  border-right: 1px solid var(--line);
+  overflow: auto;
+  background: var(--panel);
+}
+.chat { flex: 1; display: flex; flex-direction: column; }
+.page { flex: 1; overflow: auto; padding: 16px; }
+.item, .msg {
+  border-bottom: 1px solid var(--line);
+  padding: 10px 12px;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  border-radius: 0;
+  width: 100%;
+}
+.item.on { background: var(--mine); }
+.item small, .msg small { color: var(--muted); }
+.messages { flex: 1; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+.bubble {
+  max-width: min(680px, 88%);
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 8px 10px;
+}
+.bubble.mine { align-self: flex-end; background: var(--mine); }
+.bubble img { max-width: 240px; max-height: 240px; border-radius: 8px; display: block; cursor: pointer; }
+.composer { display: flex; flex-direction: row; align-items: flex-end; gap: 8px; padding: 10px; border-top: 1px solid var(--line); background: var(--panel); }
+.composer label { width: auto; white-space: nowrap; }
+.composer textarea { flex: 1; }
+.banner, .toast {
+  margin: 8px 12px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: var(--panel);
+  border: 1px solid var(--line);
+}
+.list { display: flex; flex-direction: column; }
+.person { display: flex; justify-content: space-between; gap: 8px; padding: 10px 0; border-bottom: 1px solid var(--line); }
+.overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.72);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 16px;
+}
+.overlay img { max-width: 100%; max-height: 100%; }
+table { width: 100%; border-collapse: collapse; }
+th, td { text-align: left; padding: 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 10px; }
+.stat { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+@media (max-width: 800px) {
+  .side { width: 100%; }
+  .app.chat-open .side, .app:not(.chat-open) .chat { display: none; }
+}

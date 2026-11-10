@@ -1,0 +1,9 @@
+/target
+/web/node_modules
+/web/dist
+**/*.db
+**/*.db-*
+.DS_Store
+*.log
+.env
+/tmp

@@ -1,0 +1,42 @@
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  musl:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-unknown-linux-musl
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: web/package-lock.json
+      - run: sudo apt-get update && sudo apt-get install -y musl-tools
+      - run: npm ci && npm run build
+        working-directory: web
+      - run: cargo build --release --target x86_64-unknown-linux-musl
+      - name: 打包
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME}"
+          name="chat-room-${version}-x86_64-linux-musl"
+          mkdir -p "${name}/deploy"
+          cp "target/x86_64-unknown-linux-musl/release/chat-room" "${name}/chat-room"
+          cp deploy/chat-room.service deploy/Caddyfile deploy/install.sh "${name}/deploy/"
+          chmod 0755 "${name}/chat-room" "${name}/deploy/install.sh"
+          tar -czf "${name}.tar.gz" "${name}"
+          sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            chat-room-*.tar.gz
+            chat-room-*.sha256
