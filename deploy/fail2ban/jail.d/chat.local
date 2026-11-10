@@ -1,0 +1,16 @@
+[sshd]
+enabled = true
+backend = systemd
+maxretry = 5
+findtime = 10m
+bantime = 1h
+
+[caddy-chat]
+enabled = true
+port = http,https
+filter = caddy-chat
+logpath = /var/log/caddy/chat.log
+backend = auto
+maxretry = 20
+findtime = 10m
+bantime = 1h

@@ -1,0 +1,9 @@
+/target
+/server/target
+/web/node_modules
+/web/dist
+/data
+*.db
+*.db-wal
+*.db-shm
+.DS_Store

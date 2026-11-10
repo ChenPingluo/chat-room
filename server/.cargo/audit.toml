@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+    # 只在打开别人放进来的、页大小不一致的 WAL 时才会读到未初始化内存。
+    # 数据目录是 0700，只有服务自己写。sqlx 0.8 还带不动已修复的 libsqlite3-sys 0.39。
+    "RUSTSEC-2026-0459",
+    # rsa 只被 sqlx 的 MySQL 驱动引用，而这个服务不编译、也不连接 MySQL。
+    "RUSTSEC-2023-0071",
+]

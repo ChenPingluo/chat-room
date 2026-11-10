@@ -1,0 +1,6 @@
+[Unit]
+Description=复制私语的每日快照
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/lib/chat/backup.sh /var/backups/chat

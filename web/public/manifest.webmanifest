@@ -1,0 +1,17 @@
+{
+  "name": "私语",
+  "short_name": "私语",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#121614",
+  "theme_color": "#121614",
+  "lang": "zh-CN",
+  "icons": [
+    {
+      "src": "/icon.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any"
+    }
+  ]
+}
