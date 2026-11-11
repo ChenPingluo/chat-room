@@ -41,6 +41,9 @@
   let socket;
   let alive = true;
   let knownIncoming = 0;
+  let retryMs = 1000;
+  let sawPong = true;
+  let chatEpoch = 0;
   let toastTimer;
   let stick = true;
 
@@ -187,27 +190,69 @@
     knownIncoming = incoming;
   }
 
+  async function resync() {
+    if (!me) return;
+    const ticket = chatEpoch;
+    const conversation = active;
+    await refresh();
+    if (ticket !== chatEpoch || conversation !== active || !conversation) return;
+    const rows = (await api(`/api/conversations/${conversation}/messages`)).messages;
+    if (ticket !== chatEpoch || conversation !== active) return;
+    const merged = new Map(messages.map((item) => [item.id, item]));
+    for (const item of rows) merged.set(item.id, item);
+    messages = [...merged.values()].sort((a, b) => a.id - b.id);
+  }
+
+  function alertIncoming(message) {
+    notify(`${message.sender_display_name || "有人"}发来一条消息`);
+    if (document.hidden && typeof Notification !== "undefined" && Notification.permission === "granted") {
+      navigator.serviceWorker?.ready
+        .then((registration) => registration.showNotification("新消息", { body: "你有新消息", icon: "/icon-192.png" }))
+        .catch(() => {});
+    }
+  }
+
   function connect() {
-    if (socket) socket.close();
+    if (socket) {
+      socket.onclose = null;
+      socket.close();
+    }
     const protocol = location.protocol === "https:" ? "wss" : "ws";
-    socket = new WebSocket(`${protocol}://${location.host}/api/ws`);
-    socket.onmessage = (event) => {
+    const current = new WebSocket(`${protocol}://${location.host}/api/ws`);
+    socket = current;
+    sawPong = true;
+    current.onopen = () => {
+      retryMs = 1000;
+      resync().catch(() => {});
+    };
+    current.onmessage = (event) => {
       run(async () => {
         const data = JSON.parse(event.data);
-        if (data.type === "message" && data.conversation_id === active) {
-          if (!messages.some((item) => item.id === data.message.id)) {
-            freshId = data.message.id;
-            messages = [...messages, data.message];
+        if (data.type === "pong") {
+          sawPong = true;
+          return;
+        }
+        if (data.type === "message") {
+          const message = { ...data.message, mine: data.message.sender_id === me?.id };
+          if (data.conversation_id === active) {
+            if (!messages.some((item) => item.id === message.id)) {
+              freshId = message.id;
+              messages = [...messages, message];
+            }
+            await api(`/api/conversations/${active}/read`, { method: "POST", body: { message_id: message.id } });
+          } else if (!message.mine) {
+            alertIncoming(message);
           }
-          await api(`/api/conversations/${active}/read`, { method: "POST", body: { message_id: data.message.id } });
         } else if (data.type === "recall" && data.conversation_id === active) {
           messages = messages.map((item) => (item.id === data.message_id ? { ...item, recalled: true, body: null, image_id: null } : item));
         }
-        if (data.type !== "pong") await refresh();
+        await refresh();
       });
     };
-    socket.onclose = () => {
-      if (me && alive) setTimeout(connect, 2000);
+    current.onclose = () => {
+      if (current !== socket || !me || !alive) return;
+      setTimeout(connect, retryMs);
+      retryMs = Math.min(retryMs * 2, 15000);
     };
   }
 
@@ -244,12 +289,14 @@
     await run(async () => {
       await api("/api/logout", { method: "POST" });
       me = null;
+      conversations = [];
       socket?.close();
       go("#/login");
     });
   }
 
   async function openChat(id) {
+    chatEpoch += 1;
     active = id;
     info = false;
     view = "chat";
@@ -523,6 +570,10 @@
   }
 
   $effect(() => {
+    document.title = unreadTotal ? `(${unreadTotal}) 聊天室` : "聊天室";
+  });
+
+  $effect(() => {
     const marker = `${messages.length}:${freshId}`;
     if (!stick || !scroller || !messages.length) return;
     void marker;
@@ -548,19 +599,36 @@
       else if (info) info = false;
     };
     boot();
+    const beat = setInterval(() => {
+      if (!socket || socket.readyState !== WebSocket.OPEN) return;
+      if (!sawPong) {
+        socket.close();
+        return;
+      }
+      sawPong = false;
+      socket.send('{"type":"ping"}');
+    }, 25000);
     const timer = setInterval(() => {
-      if (me) refresh().catch(() => {});
+      if (!me) return;
+      const task = socket?.readyState === WebSocket.OPEN ? refresh() : resync();
+      task.catch(() => {});
     }, 20000);
     const onHash = () => openRoute().catch(showError);
+    const onVisible = () => {
+      if (document.visibilityState === "visible" && me) resync().catch(() => {});
+    };
     window.addEventListener("hashchange", onHash);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
       stopTheme();
       clearInterval(timer);
+      clearInterval(beat);
       clearTimeout(toastTimer);
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("visibilitychange", onVisible);
       socket?.close();
     };
   });
@@ -672,7 +740,7 @@
                 {@render avatar(item.title, item.title, false, item.kind === "group")}
                 <span class="item-body">
                   <span class="item-top">
-                    <strong>{item.title}</strong>
+                    <strong class:unread={item.unread}>{item.title}</strong>
                     <small class="muted">{shortTime(item.last_at)}</small>
                   </span>
                   <span class="item-sub">
