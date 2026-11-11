@@ -133,6 +133,7 @@ async fn invites_friends_messages_and_retention() {
         .await
         .is_err());
     assert_ne!(alice.uid, bob.uid);
+    assert!(app.friends(alice.id).unwrap().is_empty());
 
     let found = app.search(alice.id, "bob").unwrap();
     assert_eq!(found.len(), 1);
@@ -145,6 +146,9 @@ async fn invites_friends_messages_and_retention() {
     let incoming = app.requests(bob.id).unwrap();
     assert_eq!(incoming.len(), 1);
     app.friend_accept(bob.id, incoming[0].id).unwrap();
+    let friends = app.friends(alice.id).unwrap();
+    assert_eq!(friends.len(), 1);
+    assert_eq!(friends[0].id, bob.id);
     let dm = app.create_dm(alice.id, bob.id).unwrap();
     assert_eq!(app.create_dm(bob.id, alice.id).unwrap(), dm);
 
@@ -243,6 +247,7 @@ async fn http_login_roundtrip() {
     assert!(cookie.contains("HttpOnly"));
     assert!(cookie.contains("SameSite=Strict"));
     let me = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/me")
@@ -256,6 +261,17 @@ async fn http_login_roundtrip() {
     let body = me.into_body().collect().await.unwrap().to_bytes();
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["username"], "Carol");
+    let friends = router
+        .oneshot(
+            Request::builder()
+                .uri("/api/friends")
+                .header("cookie", cookie.split(';').next().unwrap())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(friends.status(), StatusCode::OK);
 }
 
 fn make_invite(app: &App) -> String {

@@ -56,14 +56,13 @@ impl Hub {
     }
 
     pub fn send_users(&self, user_ids: &[i64], message: &str) {
-        let inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
+        let mut inner = self.inner.lock().unwrap_or_else(|err| err.into_inner());
         for user_id in user_ids {
-            if let Some(list) = inner.users.get(user_id) {
-                for conn in list {
-                    let _ = conn.tx.send(message.to_string());
-                }
+            if let Some(list) = inner.users.get_mut(user_id) {
+                list.retain(|conn| conn.tx.send(message.to_string()).is_ok());
             }
         }
+        inner.users.retain(|_, list| !list.is_empty());
     }
 
     pub fn is_online(&self, user_id: i64) -> bool {

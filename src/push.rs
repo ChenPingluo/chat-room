@@ -61,12 +61,71 @@ pub struct PushSub {
     pub auth: String,
 }
 
+pub fn endpoint_allowed(endpoint: &str) -> bool {
+    if endpoint.len() > 2000 || !endpoint.starts_with("https://") {
+        return false;
+    }
+    let rest = &endpoint["https://".len()..];
+    if rest.is_empty() || rest.contains('@') {
+        return false;
+    }
+    let hostport = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if hostport.is_empty() {
+        return false;
+    }
+    let host = if let Some(inner) = hostport.strip_prefix('[') {
+        let Some(end) = inner.find(']') else {
+            return false;
+        };
+        &inner[..end]
+    } else {
+        hostport.split(':').next().unwrap_or("")
+    };
+    if host.is_empty() {
+        return false;
+    }
+    let lower = host.to_ascii_lowercase();
+    if lower == "localhost" || lower.ends_with(".localhost") || lower.ends_with(".local") {
+        return false;
+    }
+    if let Ok(ip) = host.parse::<std::net::IpAddr>() {
+        return ip_is_routable(ip);
+    }
+    true
+}
+
+fn ip_is_routable(ip: std::net::IpAddr) -> bool {
+    match ip {
+        std::net::IpAddr::V4(ip) => {
+            let [first, _, _, _] = ip.octets();
+            !(ip.is_private()
+                || ip.is_loopback()
+                || ip.is_link_local()
+                || ip.is_unspecified()
+                || ip.is_broadcast()
+                || ip.is_multicast()
+                || first == 0)
+        }
+        std::net::IpAddr::V6(ip) => {
+            let first = ip.segments()[0];
+            !(ip.is_loopback()
+                || ip.is_unspecified()
+                || ip.is_unicast_link_local()
+                || ip.is_multicast()
+                || (first & 0xfe00) == 0xfc00)
+        }
+    }
+}
+
 pub async fn send(
     client: &reqwest::Client,
     vapid: &Vapid,
     subject: &str,
     sub: &PushSub,
 ) -> Result<(), PushGone> {
+    if !endpoint_allowed(&sub.endpoint) {
+        return Err(PushGone::Remove);
+    }
     let request = build_request(vapid, subject, sub)?;
     let response = client
         .post(request.url)
@@ -224,5 +283,23 @@ mod tests {
         assert_eq!(built.body[20], 65);
         assert_eq!(built.body[21], 0x04);
         assert!(built.body.len() > 86);
+    }
+
+    #[test]
+    fn rejects_non_public_push_endpoints() {
+        assert!(endpoint_allowed(
+            "https://updates.push.services.mozilla.com/wpush/v2/example"
+        ));
+        assert!(endpoint_allowed("https://fcm.googleapis.com/fcm/send/abc"));
+        assert!(!endpoint_allowed(
+            "http://updates.push.services.mozilla.com/wpush"
+        ));
+        assert!(!endpoint_allowed("https://localhost/push"));
+        assert!(!endpoint_allowed("https://127.0.0.1/push"));
+        assert!(!endpoint_allowed("https://10.1.2.3/push"));
+        assert!(!endpoint_allowed("https://192.168.1.9/push"));
+        assert!(!endpoint_allowed("https://169.254.169.254/latest"));
+        assert!(!endpoint_allowed("https://[::1]/push"));
+        assert!(!endpoint_allowed("https://user:pass@example.com/push"));
     }
 }

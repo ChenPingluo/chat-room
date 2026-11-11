@@ -12,6 +12,8 @@ use crate::util::{
 
 const USER_COLS: &str =
     "id, uid, username, display_name, is_admin, disabled, totp_enabled, created_at";
+const USER_COLS_U: &str =
+    "u.id, u.uid, u.username, u.display_name, u.is_admin, u.disabled, u.totp_enabled, u.created_at";
 
 fn map_user(row: &rusqlite::Row<'_>) -> rusqlite::Result<User> {
     Ok(User {
@@ -273,6 +275,24 @@ pub fn session_user(
     Ok(crate::models::SessionUser { session_id, user })
 }
 
+pub fn session_live(
+    conn: &Connection,
+    session_id: i64,
+    user_id: i64,
+    at: i64,
+) -> Result<bool, AppErr> {
+    let expires: Option<i64> = conn
+        .query_row(
+            "SELECT s.expires_at FROM sessions s
+             JOIN users u ON u.id=s.user_id
+             WHERE s.id=?1 AND s.user_id=?2 AND u.disabled=0",
+            params![session_id, user_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(expires.is_some_and(|expires| expires > at))
+}
+
 pub fn list_sessions(
     conn: &Connection,
     user_id: i64,
@@ -398,7 +418,7 @@ pub fn register(
     let Some((id, expires, revoked, used)) = invite else {
         return Err(AppErr::BadRequest("邀请无效"));
     };
-    if revoked != 0 || used.is_some() || expires <= at {
+    if !invite_open(revoked, used, expires, at) {
         return Err(AppErr::BadRequest("邀请无效"));
     }
     let user = insert_user(
@@ -617,26 +637,56 @@ pub fn reject_request(conn: &Connection, actor: i64, request_id: i64) -> Result<
     Ok(from)
 }
 
-pub fn delete_friend(conn: &Connection, actor: i64, other: i64) -> Result<(), AppErr> {
+pub fn delete_friend(conn: &mut Connection, actor: i64, other: i64) -> Result<(), AppErr> {
     let (lo, hi) = if actor < other {
         (actor, other)
     } else {
         (other, actor)
     };
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "DELETE FROM friendships WHERE user_lo=?1 AND user_hi=?2",
         params![lo, hi],
     )?;
-    conn.execute(
+    tx.execute(
         "DELETE FROM friend_requests WHERE (from_user=?1 AND to_user=?2) OR (from_user=?2 AND to_user=?1)",
         params![actor, other],
     )?;
+    tx.commit()?;
     Ok(())
+}
+
+pub fn invite_usable(conn: &Connection, token: &str) -> Result<(), AppErr> {
+    let hash = sha256(token.as_bytes()).to_vec();
+    let row = conn
+        .query_row(
+            "SELECT expires_at, revoked, used_by FROM invites WHERE token_hash=?1",
+            [hash],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, Option<i64>>(2)?,
+                ))
+            },
+        )
+        .optional()?;
+    let Some((expires, revoked, used)) = row else {
+        return Err(AppErr::BadRequest("邀请无效"));
+    };
+    if !invite_open(revoked, used, expires, now()) {
+        return Err(AppErr::BadRequest("邀请无效"));
+    }
+    Ok(())
+}
+
+fn invite_open(revoked: i64, used: Option<i64>, expires: i64, at: i64) -> bool {
+    revoked == 0 && used.is_none() && expires > at
 }
 
 pub fn list_friends(conn: &Connection, user_id: i64) -> Result<Vec<User>, AppErr> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {USER_COLS} FROM users u
+        "SELECT {USER_COLS_U} FROM users u
          JOIN friendships f ON u.id=f.user_lo OR u.id=f.user_hi
          WHERE (f.user_lo=?1 OR f.user_hi=?1) AND u.id!=?1
          ORDER BY u.username_lower"
@@ -722,6 +772,9 @@ fn require_sender(conn: &Connection, conversation: i64, user: i64) -> Result<i64
             .collect();
         if others.len() != 1 || !are_friends(conn, user, others[0])? {
             return Err(AppErr::Forbidden("需要先成为好友"));
+        }
+        if user_by_id(conn, others[0])?.disabled {
+            return Err(AppErr::Forbidden("对方账号不可用"));
         }
     }
     Ok(retention)
@@ -1096,11 +1149,12 @@ pub fn list_messages(
     let mut stmt = conn.prepare(
         "SELECT m.id FROM messages m
          WHERE m.conversation_id=?1 AND (?2 = 0 OR m.id < ?2)
-           AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id=m.id AND h.user_id=?3)
-         ORDER BY m.id DESC LIMIT ?4",
+           AND m.expires_at > ?3
+           AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id=m.id AND h.user_id=?4)
+         ORDER BY m.id DESC LIMIT ?5",
     )?;
     let ids = stmt.query_map(
-        params![conversation, before.unwrap_or(0), user, limit],
+        params![conversation, before.unwrap_or(0), now(), user, limit],
         |row| row.get::<_, i64>(0),
     )?;
     let mut messages = Vec::new();
@@ -1163,9 +1217,10 @@ fn unread(conn: &Connection, conversation: i64, user: i64) -> Result<i64, AppErr
         "SELECT COUNT(*) FROM messages m
          JOIN members mem ON mem.conversation_id=m.conversation_id AND mem.user_id=?2
          WHERE m.conversation_id=?1 AND m.id > COALESCE(mem.last_read_id, 0)
+           AND m.expires_at > ?3
            AND IFNULL(m.sender_id, 0) != ?2 AND m.recalled=0
            AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id=m.id AND h.user_id=?2)",
-        params![conversation, user],
+        params![conversation, user, now()],
         |row| row.get(0),
     )?)
 }
@@ -1179,10 +1234,10 @@ fn last_visible(
     let id: Option<i64> = conn
         .query_row(
             "SELECT m.id FROM messages m
-             WHERE m.conversation_id=?1
-               AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id=m.id AND h.user_id=?2)
+             WHERE m.conversation_id=?1 AND m.expires_at > ?2
+               AND NOT EXISTS (SELECT 1 FROM message_hidden h WHERE h.message_id=m.id AND h.user_id=?3)
              ORDER BY m.id DESC LIMIT 1",
-            params![conversation, user],
+            params![conversation, now(), user],
             |row| row.get(0),
         )
         .optional()?;
@@ -1223,7 +1278,10 @@ fn conversation_out(
         others
             .into_iter()
             .filter(|other| *other != user)
-            .any(|other| are_friends(conn, user, other).unwrap_or(false))
+            .any(|other| {
+                are_friends(conn, user, other).unwrap_or(false)
+                    && user_by_id(conn, other).is_ok_and(|user| !user.disabled)
+            })
     } else {
         true
     };
@@ -1293,7 +1351,7 @@ pub fn conversation(
 }
 
 pub fn set_retention(
-    conn: &Connection,
+    conn: &mut Connection,
     user: i64,
     conversation: i64,
     retention: i64,
@@ -1308,15 +1366,18 @@ pub fn set_retention(
     if kind == "group" && role != "owner" {
         return Err(AppErr::Forbidden("只有群主可以修改保留时间"));
     }
-    conn.execute(
+    let tx = conn.transaction()?;
+    tx.execute(
         "UPDATE conversations SET retention_secs=?1 WHERE id=?2",
         params![retention, conversation],
     )?;
-    conn.execute(
+    tx.execute(
         "UPDATE messages SET expires_at=MIN(expires_at, created_at + ?1) WHERE conversation_id=?2",
         params![retention, conversation],
     )?;
-    member_ids(conn, conversation)
+    let members = member_ids(&tx, conversation)?;
+    tx.commit()?;
+    Ok(members)
 }
 
 pub fn rename_group(
@@ -1374,7 +1435,8 @@ pub fn add_member(
     let at = now();
     let tx = conn.transaction()?;
     tx.execute(
-        "INSERT INTO members (conversation_id, user_id, role, joined_at) VALUES (?1, ?2, 'member', ?3)",
+        "INSERT INTO members (conversation_id, user_id, role, joined_at, last_read_id)
+         VALUES (?1, ?2, 'member', ?3, (SELECT IFNULL(MAX(id), 0) FROM messages WHERE conversation_id=?1))",
         params![conversation, target, at],
     )?;
     let name = user_by_id(&tx, target)?.display_name;
@@ -1504,7 +1566,9 @@ pub fn leave(
         return Err(AppErr::BadRequest("请先转让群主"));
     }
     if count <= 1 {
-        let files = delete_conversation(conn, conversation)?;
+        let tx = conn.transaction()?;
+        let files = delete_conversation(&tx, conversation)?;
+        tx.commit()?;
         return Ok((Vec::new(), files));
     }
     let at = now();
@@ -1585,6 +1649,16 @@ pub fn image_name_for_member(
         .optional()?
         .ok_or(AppErr::NotFound)?;
     require_reader(conn, conversation, user)?;
+    let live: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM messages WHERE image_id=?1 AND conversation_id=?2 AND expires_at>?3 LIMIT 1",
+            params![image_id, conversation, now()],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if live.is_none() {
+        return Err(AppErr::NotFound);
+    }
     Ok(if thumb { thumb_name } else { full })
 }
 
@@ -1652,9 +1726,7 @@ pub fn save_push(
     p256dh: &str,
     auth: &str,
 ) -> Result<(), AppErr> {
-    if endpoint.len() > 2000
-        || !(endpoint.starts_with("https://") || endpoint.starts_with("http://"))
-    {
+    if !crate::push::endpoint_allowed(endpoint) {
         return Err(AppErr::BadRequest("推送订阅无效"));
     }
     if p256dh.len() > 256 || auth.len() > 256 {
@@ -1733,6 +1805,7 @@ pub fn set_disabled(conn: &Connection, user_id: i64, disabled: bool) -> Result<(
     }
     if disabled {
         delete_user_sessions(conn, user_id)?;
+        conn.execute("DELETE FROM push_subs WHERE user_id=?1", [user_id])?;
     }
     Ok(())
 }
@@ -1827,6 +1900,10 @@ pub fn delete_user(conn: &mut Connection, user_id: i64) -> Result<Vec<String>, A
     tx.execute("DELETE FROM push_subs WHERE user_id=?1", [user_id])?;
     tx.execute(
         "UPDATE invites SET created_by=NULL WHERE created_by=?1",
+        [user_id],
+    )?;
+    tx.execute(
+        "UPDATE invites SET used_by=NULL WHERE used_by=?1",
         [user_id],
     )?;
     tx.execute("DELETE FROM users WHERE id=?1", [user_id])?;

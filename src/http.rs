@@ -696,13 +696,14 @@ async fn ws(
     upgrade: WebSocketUpgrade,
 ) -> impl IntoResponse {
     let user_id = user.0.user.id;
+    let session_id = user.0.session_id;
     upgrade
         .max_message_size(4096)
-        .on_upgrade(move |socket| ws_loop(socket, app, user_id))
+        .on_upgrade(move |socket| ws_loop(socket, app, user_id, session_id))
 }
 
 #[allow(clippy::collapsible_match)]
-async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64) {
+async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id: i64) {
     let Some(sub) = app.hub().subscribe(user_id, 5) else {
         let _ = socket.send(Message::Close(None)).await;
         return;
@@ -712,6 +713,13 @@ async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64) {
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                let alive = app
+                    .with_db(|conn| crate::repo::session_live(conn, session_id, user_id, util::now()))
+                    .unwrap_or(false);
+                if !alive {
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
                 if socket.send(Message::Ping(vec![1].into())).await.is_err() {
                     break;
                 }

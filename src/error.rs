@@ -45,6 +45,9 @@ impl AppErr {
 
 impl IntoResponse for AppErr {
     fn into_response(self) -> Response {
+        if self.status() == StatusCode::INTERNAL_SERVER_ERROR {
+            tracing::error!(error = self.message(), "请求返回内部错误");
+        }
         let mut body = json!({ "error": self.message() });
         if matches!(self, AppErr::TotpRequired) {
             body["totp_required"] = json!(true);

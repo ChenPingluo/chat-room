@@ -4,10 +4,13 @@ use rusqlite::Connection;
 
 use crate::error::StartupError;
 
-const MIGRATIONS: &[&str] = &[include_str!("../migrations/001_init.sql")];
+const MIGRATIONS: &[&str] = &[
+    include_str!("../migrations/001_init.sql"),
+    include_str!("../migrations/002_indexes.sql"),
+];
 
 pub fn open_db(path: &Path) -> Result<Connection, StartupError> {
-    let conn = Connection::open(path)?;
+    let mut conn = Connection::open(path)?;
     conn.execute_batch(
         "
         PRAGMA journal_mode=WAL;
@@ -20,11 +23,11 @@ pub fn open_db(path: &Path) -> Result<Connection, StartupError> {
         PRAGMA wal_autocheckpoint=1000;
         ",
     )?;
-    migrate(&conn)?;
+    migrate(&mut conn)?;
     Ok(conn)
 }
 
-fn migrate(conn: &Connection) -> Result<(), StartupError> {
+fn migrate(conn: &mut Connection) -> Result<(), StartupError> {
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY);",
     )?;
@@ -38,11 +41,13 @@ fn migrate(conn: &Connection) -> Result<(), StartupError> {
         if version <= current {
             continue;
         }
-        conn.execute_batch(sql)?;
-        conn.execute(
+        let tx = conn.transaction()?;
+        tx.execute_batch(sql)?;
+        tx.execute(
             "INSERT INTO schema_migrations (version) VALUES (?1)",
             [version],
         )?;
+        tx.commit()?;
     }
     Ok(())
 }

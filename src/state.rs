@@ -51,6 +51,7 @@ impl App {
         verify_key(&conn, &key)?;
         let vapid = load_vapid(&conn, &key)?;
         let http = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
             .timeout(Duration::from_secs(10))
             .build()
             .map_err(|_| StartupError::Message("HTTP 客户端初始化失败"))?;
@@ -115,6 +116,13 @@ impl App {
         if token.len() < 20 || token.len() > 128 {
             return Err(AppErr::BadRequest("邀请无效"));
         }
+        if !self
+            .rate
+            .allow(&format!("register:ip:{ip}"), 30, Duration::from_secs(900))
+        {
+            return Err(AppErr::TooMany);
+        }
+        self.with_db(|conn| repo::invite_usable(conn, token))?;
         let hash = self.hash_pw(password).await?;
         let user = self
             .with_db(|conn| repo::register(conn, &self.key, token, &username, &hash, &display))?;
