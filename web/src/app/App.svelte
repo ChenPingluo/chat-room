@@ -27,6 +27,8 @@
   let totpCode = $state("");
   let scroller = $state(null);
   let socket;
+  let knownIncoming = 0;
+  let toastTimer;
 
   function route() {
     const hash = location.hash.replace(/^#/, "") || "/chats";
@@ -43,7 +45,29 @@
   }
 
   function showError(err) {
+    if (err instanceof ApiError && err.status === 401 && me) {
+      socket?.close();
+      me = null;
+      view = "login";
+    }
     error = err instanceof ApiError ? err.message : "网络异常";
+  }
+
+  function notify(message) {
+    toast = message;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => {
+      toast = "";
+    }, 4000);
+  }
+
+  async function run(fn) {
+    error = "";
+    try {
+      await fn();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function boot() {
@@ -51,15 +75,23 @@
     if (current.name === "register") register.token = current.token;
     try {
       me = await api("/api/me");
+    } catch (err) {
+      view = current.name === "register" ? "register" : "login";
+      if (!(err instanceof ApiError) || err.status !== 401) showError(err);
+      return;
+    }
+    try {
       await refresh();
       connect();
       await openRoute(current.name === "register" ? { name: "chats" } : current);
-    } catch {
-      view = current.name === "register" ? "register" : "login";
+    } catch (err) {
+      if (view === "boot") view = current.name === "chat" ? "chats" : current.name === "friends" || current.name === "settings" ? current.name : "chats";
+      showError(err);
     }
   }
 
   async function openRoute(current = route()) {
+    error = "";
     if (!me) {
       view = current.name === "register" ? "register" : "login";
       if (current.token) register.token = current.token;
@@ -82,22 +114,25 @@
   async function refresh() {
     conversations = (await api("/api/conversations")).conversations;
     const incoming = (await api("/api/friends/requests")).requests.filter((item) => item.incoming).length;
-    if (incoming) toast = `${incoming} 条好友申请`;
+    if (incoming > knownIncoming) notify(`${incoming} 条好友申请`);
+    knownIncoming = incoming;
   }
 
   function connect() {
     if (socket) socket.close();
     const protocol = location.protocol === "https:" ? "wss" : "ws";
     socket = new WebSocket(`${protocol}://${location.host}/api/ws`);
-    socket.onmessage = async (event) => {
-      const data = JSON.parse(event.data);
-      if (data.type === "message" && data.conversation_id === active) {
-        if (!messages.some((item) => item.id === data.message.id)) messages = [...messages, data.message];
-        await api(`/api/conversations/${active}/read`, { method: "POST", body: { message_id: data.message.id } });
-      } else if (data.type === "recall" && data.conversation_id === active) {
-        messages = messages.map((item) => (item.id === data.message_id ? { ...item, recalled: true, body: null, image_id: null } : item));
-      }
-      if (data.type !== "pong") await refresh();
+    socket.onmessage = (event) => {
+      run(async () => {
+        const data = JSON.parse(event.data);
+        if (data.type === "message" && data.conversation_id === active) {
+          if (!messages.some((item) => item.id === data.message.id)) messages = [...messages, data.message];
+          await api(`/api/conversations/${active}/read`, { method: "POST", body: { message_id: data.message.id } });
+        } else if (data.type === "recall" && data.conversation_id === active) {
+          messages = messages.map((item) => (item.id === data.message_id ? { ...item, recalled: true, body: null, image_id: null } : item));
+        }
+        if (data.type !== "pong") await refresh();
+      });
     };
     socket.onclose = () => {
       if (me) setTimeout(connect, 2000);
@@ -110,6 +145,7 @@
     try {
       me = await api("/api/login", { method: "POST", body: login });
       login = { username: "", password: "", totp: "", needTotp: false };
+      knownIncoming = 0;
       await refresh();
       connect();
       go("#/chats");
@@ -133,10 +169,12 @@
   }
 
   async function logout() {
-    await api("/api/logout", { method: "POST" });
-    socket?.close();
-    me = null;
-    go("#/login");
+    await run(async () => {
+      await api("/api/logout", { method: "POST" });
+      me = null;
+      socket?.close();
+      go("#/login");
+    });
   }
 
   async function openChat(id) {
@@ -195,58 +233,82 @@
   }
 
   async function recall(message) {
-    const updated = await api(`/api/messages/${message.id}/recall`, { method: "POST" });
-    messages = messages.map((item) => (item.id === updated.id ? updated : item));
+    await run(async () => {
+      const updated = await api(`/api/messages/${message.id}/recall`, { method: "POST" });
+      messages = messages.map((item) => (item.id === updated.id ? updated : item));
+    });
   }
 
   async function hide(message) {
-    await api(`/api/messages/${message.id}/hide`, { method: "POST" });
-    messages = messages.filter((item) => item.id !== message.id);
+    await run(async () => {
+      await api(`/api/messages/${message.id}/hide`, { method: "POST" });
+      messages = messages.filter((item) => item.id !== message.id);
+    });
   }
 
   async function loadFriends() {
-    friends = (await api("/api/friends")).friends;
-    requests = (await api("/api/friends/requests")).requests;
+    await run(async () => {
+      friends = (await api("/api/friends")).friends;
+      requests = (await api("/api/friends/requests")).requests;
+    });
   }
 
   async function doSearch(event) {
     event.preventDefault();
-    found = (await api("/api/users/search", { method: "POST", body: { q: search } })).users;
-    if (!found.length) error = "没有找到完全匹配的用户";
+    await run(async () => {
+      found = (await api("/api/users/search", { method: "POST", body: { q: search } })).users;
+      if (!found.length) error = "没有找到完全匹配的用户";
+    });
   }
 
   async function addFriend(id) {
-    const result = await api("/api/friends/requests", { method: "POST", body: { user_id: id } });
-    toast = result.accepted ? "已成为好友" : "申请已发送";
-    await loadFriends();
+    await run(async () => {
+      const result = await api("/api/friends/requests", { method: "POST", body: { user_id: id } });
+      notify(result.accepted ? "已成为好友" : "申请已发送");
+      friends = (await api("/api/friends")).friends;
+      requests = (await api("/api/friends/requests")).requests;
+    });
   }
 
   async function accept(id) {
-    await api(`/api/friends/requests/${id}/accept`, { method: "POST" });
-    await loadFriends();
+    await run(async () => {
+      await api(`/api/friends/requests/${id}/accept`, { method: "POST" });
+      friends = (await api("/api/friends")).friends;
+      requests = (await api("/api/friends/requests")).requests;
+    });
   }
 
   async function reject(id) {
-    await api(`/api/friends/requests/${id}/reject`, { method: "POST" });
-    await loadFriends();
+    await run(async () => {
+      await api(`/api/friends/requests/${id}/reject`, { method: "POST" });
+      friends = (await api("/api/friends")).friends;
+      requests = (await api("/api/friends/requests")).requests;
+    });
   }
 
   async function removeFriend(id) {
-    await api(`/api/friends/${id}`, { method: "DELETE" });
-    await loadFriends();
+    await run(async () => {
+      await api(`/api/friends/${id}`, { method: "DELETE" });
+      friends = (await api("/api/friends")).friends;
+      requests = (await api("/api/friends/requests")).requests;
+    });
   }
 
   async function startDm(id) {
-    const result = await api("/api/conversations/dm", { method: "POST", body: { user_id: id } });
-    go(`#/chat/${result.id}`);
+    await run(async () => {
+      const result = await api("/api/conversations/dm", { method: "POST", body: { user_id: id } });
+      go(`#/chat/${result.id}`);
+    });
   }
 
   async function createGroup(event) {
     event.preventDefault();
-    const result = await api("/api/conversations/group", { method: "POST", body: { name: groupName, member_ids: picked } });
-    groupName = "";
-    picked = [];
-    go(`#/chat/${result.id}`);
+    await run(async () => {
+      const result = await api("/api/conversations/group", { method: "POST", body: { name: groupName, member_ids: picked } });
+      groupName = "";
+      picked = [];
+      go(`#/chat/${result.id}`);
+    });
   }
 
   function togglePick(id) {
@@ -259,32 +321,42 @@
     const body = {};
     if (data.get("name")) body.name = data.get("name");
     if (data.get("retention")) body.retention = Number(data.get("retention"));
-    await api(`/api/conversations/${active}`, { method: "PATCH", body });
-    detail = await api(`/api/conversations/${active}`);
-    await refresh();
+    await run(async () => {
+      await api(`/api/conversations/${active}`, { method: "PATCH", body });
+      detail = await api(`/api/conversations/${active}`);
+      await refresh();
+    });
   }
 
   async function addMember(event) {
     event.preventDefault();
     const id = Number(new FormData(event.target).get("user_id"));
-    await api(`/api/conversations/${active}/members`, { method: "POST", body: { user_id: id } });
-    detail = await api(`/api/conversations/${active}`);
+    await run(async () => {
+      await api(`/api/conversations/${active}/members`, { method: "POST", body: { user_id: id } });
+      detail = await api(`/api/conversations/${active}`);
+    });
   }
 
   async function kick(id) {
-    await api(`/api/conversations/${active}/members/${id}`, { method: "DELETE" });
-    detail = await api(`/api/conversations/${active}`);
+    await run(async () => {
+      await api(`/api/conversations/${active}/members/${id}`, { method: "DELETE" });
+      detail = await api(`/api/conversations/${active}`);
+    });
   }
 
   async function transfer(id) {
-    await api(`/api/conversations/${active}/transfer`, { method: "POST", body: { user_id: id } });
-    detail = await api(`/api/conversations/${active}`);
+    await run(async () => {
+      await api(`/api/conversations/${active}/transfer`, { method: "POST", body: { user_id: id } });
+      detail = await api(`/api/conversations/${active}`);
+    });
   }
 
   async function leave() {
-    await api(`/api/conversations/${active}/leave`, { method: "POST" });
-    active = null;
-    go("#/chats");
+    await run(async () => {
+      await api(`/api/conversations/${active}/leave`, { method: "POST" });
+      active = null;
+      go("#/chats");
+    });
   }
 
   async function changePassword(event) {
@@ -293,35 +365,43 @@
     try {
       await api("/api/me/password", { method: "POST", body: passwords });
       passwords = { old_password: "", new_password: "" };
-      toast = "密码已更新";
+      notify("密码已更新");
     } catch (err) {
       showError(err);
     }
   }
 
   async function beginTotp() {
-    totp = await api("/api/me/totp/begin", { method: "POST" });
+    await run(async () => {
+      totp = await api("/api/me/totp/begin", { method: "POST" });
+    });
   }
 
   async function enableTotp(event) {
     event.preventDefault();
-    await api("/api/me/totp/enable", { method: "POST", body: { code: totpCode } });
-    me = await api("/api/me");
-    totp = null;
-    toast = "两步验证已开启";
+    await run(async () => {
+      await api("/api/me/totp/enable", { method: "POST", body: { code: totpCode } });
+      me = await api("/api/me");
+      totp = null;
+      notify("两步验证已开启");
+    });
   }
 
   async function disableTotp(event) {
     event.preventDefault();
     const data = new FormData(event.target);
-    await api("/api/me/totp/disable", { method: "POST", body: { password: data.get("password"), code: data.get("code") } });
-    me = await api("/api/me");
-    toast = "两步验证已关闭";
+    await run(async () => {
+      await api("/api/me/totp/disable", { method: "POST", body: { password: data.get("password"), code: data.get("code") } });
+      me = await api("/api/me");
+      notify("两步验证已关闭");
+    });
   }
 
   async function revokeSession(id) {
-    await api(`/api/me/sessions/${id}`, { method: "DELETE" });
-    sessions = (await api("/api/me/sessions")).sessions;
+    await run(async () => {
+      await api(`/api/me/sessions/${id}`, { method: "DELETE" });
+      sessions = (await api("/api/me/sessions")).sessions;
+    });
   }
 
   function keyBytes(value) {
@@ -331,20 +411,21 @@
   }
 
   async function enablePush() {
-    error = "";
-    const registration = await navigator.serviceWorker.ready;
-    const permission = await Notification.requestPermission();
-    if (permission !== "granted") {
-      error = "没有获得通知权限";
-      return;
-    }
-    const vapid = await api("/api/push/vapid");
-    const subscription = await registration.pushManager.subscribe({
-      userVisibleOnly: true,
-      applicationServerKey: keyBytes(vapid.publicKey),
+    await run(async () => {
+      const registration = await navigator.serviceWorker.ready;
+      const permission = await Notification.requestPermission();
+      if (permission !== "granted") {
+        error = "没有获得通知权限";
+        return;
+      }
+      const vapid = await api("/api/push/vapid");
+      const subscription = await registration.pushManager.subscribe({
+        userVisibleOnly: true,
+        applicationServerKey: keyBytes(vapid.publicKey),
+      });
+      await api("/api/push/subscribe", { method: "POST", body: subscription.toJSON() });
+      notify("推送已开启");
     });
-    await api("/api/push/subscribe", { method: "POST", body: subscription.toJSON() });
-    toast = "推送已开启";
   }
 
   onMount(() => {
@@ -356,6 +437,7 @@
     window.addEventListener("hashchange", onHash);
     return () => {
       clearInterval(timer);
+      clearTimeout(toastTimer);
       window.removeEventListener("hashchange", onHash);
       socket?.close();
     };

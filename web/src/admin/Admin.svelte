@@ -19,11 +19,15 @@
   }
 
   async function load() {
-    if (tab === "status") status = await api("/api/status");
-    if (tab === "users") users = (await api("/api/users")).users;
-    if (tab === "invites") invites = (await api("/api/invites")).invites;
-    if (tab === "conversations") conversations = (await api("/api/conversations")).conversations;
-    if (tab === "audit") audit = (await api("/api/audit")).audit;
+    try {
+      if (tab === "status") status = await api("/api/status");
+      if (tab === "users") users = (await api("/api/users")).users;
+      if (tab === "invites") invites = (await api("/api/invites")).invites;
+      if (tab === "conversations") conversations = (await api("/api/conversations")).conversations;
+      if (tab === "audit") audit = (await api("/api/audit")).audit;
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function boot() {
@@ -47,8 +51,12 @@
   }
 
   async function logout() {
-    await api("/api/logout", { method: "POST" });
-    me = null;
+    try {
+      await api("/api/logout", { method: "POST" });
+      me = null;
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function select(next) {
@@ -59,13 +67,23 @@
 
   async function createInvite(event) {
     event.preventDefault();
-    created = await api("/api/invites", { method: "POST", body: { days: Number(days) } });
-    await load();
+    error = "";
+    try {
+      created = await api("/api/invites", { method: "POST", body: { days: Number(days) } });
+      await load();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function revoke(id) {
-    await api(`/api/invites/${id}/revoke`, { method: "POST" });
-    await load();
+    error = "";
+    try {
+      await api(`/api/invites/${id}/revoke`, { method: "POST" });
+      await load();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function act(path) {
@@ -79,20 +97,34 @@
   }
 
   async function reset(id) {
-    await api(`/api/users/${id}/password`, { method: "POST", body: { password } });
-    password = "";
     error = "";
+    try {
+      await api(`/api/users/${id}/password`, { method: "POST", body: { password } });
+      password = "";
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function remove(id) {
     if (!confirm("删除用户会清除其私聊和消息，不能恢复。")) return;
-    await api(`/api/users/${id}`, { method: "DELETE" });
-    await load();
+    error = "";
+    try {
+      await api(`/api/users/${id}`, { method: "DELETE" });
+      await load();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   async function vacuum() {
-    await api("/api/vacuum", { method: "POST" });
-    await load();
+    error = "";
+    try {
+      await api("/api/vacuum", { method: "POST" });
+      await load();
+    } catch (err) {
+      showError(err);
+    }
   }
 
   function mb(bytes) {
