@@ -60,7 +60,7 @@ sudo chmod 600 /etc/chat-room/master.key
 6. 创建管理员。命令会先打印两步验证密钥，你把它加进验证器后输入当前验证码，账号才会写入。
 
 ```sh
-sudo chat-room create-admin --data-dir /var/lib/chat-room --username admin
+sudo chat-room create-admin --master-key /etc/chat-room/master.key --data-dir /var/lib/chat-room --username admin
 ```
 
 密码也可以不放在命令行里，程序会提示输入。不要用 `--password`，否则它会出现在进程列表里。
@@ -75,7 +75,7 @@ chat-room check --data-dir /var/lib/chat-room
 
 8. 把 `deploy/Caddyfile` 里的域名改成你的，放到 Caddy 配置里并重载。只反代 `127.0.0.1:8080`。不要公开 8081。
 
-升级时重新执行 `install.sh`，然后 `sudo systemctl restart chat-room`。主密钥和 `/var/lib/chat-room` 不要删。
+升级时重新执行 `install.sh`，然后 `sudo systemctl restart chat-room`。已存在的 systemd 单元不会被覆盖。主密钥和 `/var/lib/chat-room` 不要删。
 
 如果 systemd 因为 `MemoryDenyWriteExecute` 或系统调用过滤无法启动，服务日志里会有 `Permission denied` 或 `Operation not permitted`。注释掉对应那一行后再启动。内存上限 `MemoryMax=300M` 建议保留。
 

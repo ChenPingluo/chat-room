@@ -18,10 +18,15 @@ fi
 
 install -m 0755 "$BIN" /usr/local/bin/chat-room
 install -d -m 0700 /etc/chat-room
-if [ -n "${PUBLIC_URL:-}" ]; then
-  sed "s#https://chat.example.com#${PUBLIC_URL}#g" "$ROOT/deploy/chat-room.service" > /etc/systemd/system/chat-room.service
+UNIT=/etc/systemd/system/chat-room.service
+if [ -f "$UNIT" ]; then
+  echo "已存在 $UNIT，升级时不覆盖。请自行对照 $ROOT/deploy/chat-room.service。"
 else
-  install -m 0644 "$ROOT/deploy/chat-room.service" /etc/systemd/system/chat-room.service
+  if [ -n "${PUBLIC_URL:-}" ]; then
+    sed "s#https://chat.example.com#${PUBLIC_URL}#g" "$ROOT/deploy/chat-room.service" > "$UNIT"
+  else
+    install -m 0644 "$ROOT/deploy/chat-room.service" "$UNIT"
+  fi
 fi
 install -m 0644 "$ROOT/deploy/Caddyfile" /etc/chat-room/Caddyfile.example
 
@@ -40,6 +45,6 @@ if [ ! -f /etc/chat-room/master.key ]; then
   echo "  chmod 600 /etc/chat-room/master.key"
 fi
 echo "编辑 /etc/systemd/system/chat-room.service 里的 --public-url，然后："
-echo "  chat-room create-admin --data-dir /var/lib/chat-room --username 你的名字"
+echo "  chat-room create-admin --master-key /etc/chat-room/master.key --data-dir /var/lib/chat-room --username 你的名字"
 echo "  systemctl enable --now chat-room"
 echo "管理后台只在服务器本机的 127.0.0.1:8081。用 ssh -L 8081:127.0.0.1:8081 打开。"
