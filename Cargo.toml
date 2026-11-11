@@ -1,6 +1,6 @@
 [package]
 name = "chat-room"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "单文件部署的私密聊天室"
 license = "MIT"
