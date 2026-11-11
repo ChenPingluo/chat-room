@@ -102,7 +102,7 @@
 }
 
 * { box-sizing: border-box; }
-html, body, #app { height: 100%; }
+html, body, #app { height: var(--app-height, 100%); }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0;
@@ -332,7 +332,9 @@ input.narrow { width: 96px; flex: none; }
   border: 0;
 }
 .item:hover, .person:hover { background: var(--surface-hover); }
-.item.on { background: var(--surface-active); }
+.item.on { background: var(--surface-active); box-shadow: inset 3px 0 0 var(--accent); }
+.item-top strong { font-weight: 550; }
+.item-top strong.unread { font-weight: 700; }
 .item-body, .who-text, .person-body { min-width: 0; flex: 1; }
 .item-top, .item-sub, .meta {
   display: flex;
@@ -418,6 +420,16 @@ input.narrow { width: 96px; flex: none; }
   padding: 3px 8px;
   border-radius: 999px;
   font-size: 0.75rem;
+  border-color: transparent;
+  color: var(--muted);
+}
+.bubble:not(.mine) .actions button:hover, .system button:hover {
+  border-color: var(--line);
+  background: var(--surface-hover);
+  color: var(--text);
+}
+.bubble.mine .actions button:hover {
+  background: color-mix(in srgb, var(--mine-ink) 16%, transparent);
 }
 .bubble img, .pic img {
   max-width: 240px;
@@ -646,18 +658,6 @@ th {
 @media (prefers-reduced-motion: no-preference) {
   .avatar .dot { animation: pulse 2.4s ease-in-out infinite; }
 }
-@media (hover: hover) and (pointer: fine) {
-  .bubble .actions, .system button {
-    opacity: 0;
-    transform: translateY(4px);
-    transition: opacity 150ms var(--ease), transform 150ms var(--ease);
-  }
-  .bubble:hover .actions, .bubble:focus-within .actions,
-  .system:hover button, .system:focus-within button {
-    opacity: 1;
-    transform: none;
-  }
-}
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb {
   background: var(--scrollbar);
@@ -669,8 +669,12 @@ th {
 @media (min-width: 960px) {
   .board.columns { grid-template-columns: 1fr 1fr; align-items: start; }
   .board.columns .wide { grid-column: 1 / -1; }
+  .thread .messages, .thread .composer, .thread .thread-error, .thread .upload-note, .thread .banner {
+    width: min(860px, calc(100% - 28px));
+    margin-inline: auto;
+  }
 }
-@media (min-width: 1440px) {
+@media (min-width: 1200px) {
   #app:has(.shell) {
     width: min(1480px, calc(100% - 48px));
     height: calc(100vh - 48px);
@@ -682,7 +686,7 @@ th {
   }
 }
 @supports (height: 100dvh) {
-  @media (min-width: 1440px) {
+  @media (min-width: 1200px) {
     #app:has(.shell) { height: calc(100dvh - 48px); }
   }
 }
@@ -762,3 +766,5 @@ th {
     transition: none !important;
   }
 }
+html.kb-open .composer { margin-bottom: 6px; }
+html.kb-open body { position: fixed; width: 100%; }

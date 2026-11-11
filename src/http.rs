@@ -702,7 +702,6 @@ async fn ws(
         .on_upgrade(move |socket| ws_loop(socket, app, user_id, session_id))
 }
 
-#[allow(clippy::collapsible_match)]
 async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id: i64) {
     let Some(sub) = app.hub().subscribe(user_id, 5) else {
         let _ = socket.send(Message::Close(None)).await;
@@ -710,9 +709,14 @@ async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id:
     };
     let mut rx = sub.rx;
     let mut ticker = interval(Duration::from_secs(30));
+    let mut seen = std::time::Instant::now();
     loop {
         tokio::select! {
             _ = ticker.tick() => {
+                if seen.elapsed() > Duration::from_secs(75) {
+                    let _ = socket.send(Message::Close(None)).await;
+                    break;
+                }
                 let alive = app
                     .with_db(|conn| crate::repo::session_live(conn, session_id, user_id, util::now()))
                     .unwrap_or(false);
@@ -728,7 +732,17 @@ async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id:
                 match incoming {
                     Some(Ok(Message::Close(_))) | None => break,
                     Some(Err(_)) => break,
+                    Some(Ok(Message::Ping(payload))) => {
+                        seen = std::time::Instant::now();
+                        if socket.send(Message::Pong(payload)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Pong(_) | Message::Binary(_))) => {
+                        seen = std::time::Instant::now();
+                    }
                     Some(Ok(Message::Text(text))) => {
+                        seen = std::time::Instant::now();
                         if text.contains("ping")
                             && socket
                                 .send(Message::Text("{\"type\":\"pong\"}".into()))
@@ -738,7 +752,6 @@ async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id:
                             break;
                         }
                     }
-                    _ => {}
                 }
             }
             event = rx.recv() => {
