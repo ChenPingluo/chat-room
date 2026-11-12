@@ -21,6 +21,12 @@
 
 密码用 Argon2id 存储。登录会话放在 `HttpOnly`、`SameSite=Strict` 的 Cookie 里，只存哈希。登录和管理员操作有频率限制。管理员登录必须使用两步验证。
 
+## 登录
+
+打开域名就会进入登录页。地址是 `https://你的域名/#/login`，写成 `https://你的域名/login` 也一样。注册页上有「已有账号？去登录」。邀请链接用过、过期或作废时，页面会直接说明，并给出登录按钮。
+
+手机上的退出在「设置」页顶部。桌面端左侧栏最下面也有退出。退出之后再打开域名，会回到登录页。没有账号时，只能用管理员发给你的邀请链接注册。
+
 ## 管理后台
 
 管理页面和聊天服务在同一个进程里，只监听 `127.0.0.1:8081`，不经过 Caddy。在你自己的电脑上执行：
@@ -76,6 +82,22 @@ chat-room check --data-dir /var/lib/chat-room
 8. 把 `deploy/Caddyfile` 里的域名改成你的，放到 Caddy 配置里并重载。只反代 `127.0.0.1:8080`。不要公开 8081。
 
 升级时重新执行 `install.sh`，然后 `sudo systemctl restart chat-room`。已存在的 systemd 单元不会被覆盖。主密钥和 `/var/lib/chat-room` 不要删。
+
+### 从 v0.2.0 升级到 v0.2.1
+
+这次没有改数据库、接口、Cookie 和 systemd 单元。已有账号、登录状态和消息都会留着。不要删除 `/var/lib/chat-room` 和 `/etc/chat-room/master.key`。服务器上不需要编译，下载后替换二进制再重启即可。
+
+```sh
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.1/chat-room-v0.2.1-x86_64-linux-musl.tar.gz
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.1/chat-room-v0.2.1-x86_64-linux-musl.tar.gz.sha256
+sha256sum -c chat-room-v0.2.1-x86_64-linux-musl.tar.gz.sha256
+tar -xzf chat-room-v0.2.1-x86_64-linux-musl.tar.gz
+cd chat-room-v0.2.1
+sudo ./deploy/install.sh
+sudo systemctl restart chat-room
+```
+
+同一个压缩包也放在仓库的 `release/` 目录里。已经克隆了仓库的话，拉取对应标签后可以直接用这个文件，不必再下载一次。
 
 如果 systemd 因为 `MemoryDenyWriteExecute` 或系统调用过滤无法启动，服务日志里会有 `Permission denied` 或 `Operation not permitted`。注释掉对应那一行后再启动。内存上限 `MemoryMax=300M` 建议保留。
 
