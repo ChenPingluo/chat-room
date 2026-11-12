@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512">
+  <defs>
+    <linearGradient id="bg" x1="72" y1="24" x2="470" y2="500" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#9cf6ee"/>
+      <stop offset="0.42" stop-color="#128f88"/>
+      <stop offset="1" stop-color="#243e86"/>
+    </linearGradient>
+    <linearGradient id="sheen" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.5"/>
+      <stop offset="0.42" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="bubble" x1="110" y1="180" x2="390" y2="420" gradientUnits="userSpaceOnUse">
+      <stop offset="0" stop-color="#ffffff"/>
+      <stop offset="1" stop-color="#e7fbf8"/>
+    </linearGradient>
+  </defs>
+  <rect width="512" height="512" fill="url(#bg)"/>
+  <rect width="512" height="512" fill="url(#sheen)"/>
+  <g transform="translate(256 268) scale(0.7) translate(-256 -256)">
+    <g opacity="0.38">
+      <rect x="188" y="92" width="228" height="156" rx="44" fill="#ffffff"/>
+    </g>
+    <path d="M96 214c0-32 26-54 62-54h196c36 0 62 22 62 54v112c0 32-26 54-62 54H214l-62 52c-8 6-18-2-16-12l8-40h-48c-36 0-62-22-62-54V214z" fill="url(#bubble)"/>
+    <path d="M132 196h150c18 0 28 8 28 20s-10 16-28 16H150c-14 0-22-6-22-16s8-20 22-20z" fill="#ffffff" opacity="0.55"/>
+    <circle cx="176" cy="286" r="16" fill="#0e7a74"/>
+    <circle cx="232" cy="286" r="16" fill="#0e7a74" opacity="0.72"/>
+    <circle cx="288" cy="286" r="16" fill="#0e7a74" opacity="0.42"/>
+  </g>
+</svg>

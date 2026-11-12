@@ -12,31 +12,54 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: 检查仓库里是否已经有这个版本的压缩包
+        id: bundled
+        run: |
+          set -eu
+          version="${GITHUB_REF_NAME}"
+          name="chat-room-${version}-x86_64-linux-musl"
+          mkdir -p dist-release
+          if [ -f "release/${name}.tar.gz" ]; then
+            (cd release && sha256sum -c "${name}.tar.gz.sha256")
+            cp "release/${name}.tar.gz" "release/${name}.tar.gz.sha256" dist-release/
+            echo "present=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "present=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: dtolnay/rust-toolchain@stable
+        if: steps.bundled.outputs.present != 'true'
         with:
           targets: x86_64-unknown-linux-musl
       - uses: actions/setup-node@v4
+        if: steps.bundled.outputs.present != 'true'
         with:
           node-version: 22
           cache: npm
           cache-dependency-path: web/package-lock.json
       - run: sudo apt-get update && sudo apt-get install -y musl-tools
+        if: steps.bundled.outputs.present != 'true'
       - run: npm ci && npm run build
+        if: steps.bundled.outputs.present != 'true'
         working-directory: web
       - run: cargo build --release --target x86_64-unknown-linux-musl
+        if: steps.bundled.outputs.present != 'true'
       - name: 打包
+        if: steps.bundled.outputs.present != 'true'
         run: |
           set -eu
           version="${GITHUB_REF_NAME}"
           name="chat-room-${version}-x86_64-linux-musl"
-          mkdir -p "${name}/deploy"
+          mkdir -p "${name}/deploy" dist-release
           cp "target/x86_64-unknown-linux-musl/release/chat-room" "${name}/chat-room"
           cp deploy/chat-room.service deploy/Caddyfile deploy/install.sh "${name}/deploy/"
           chmod 0755 "${name}/chat-room" "${name}/deploy/install.sh"
           tar -czf "${name}.tar.gz" "${name}"
           sha256sum "${name}.tar.gz" > "${name}.tar.gz.sha256"
+          cp "${name}.tar.gz" "${name}.tar.gz.sha256" dist-release/
       - uses: softprops/action-gh-release@v2
         with:
-          files: |
-            chat-room-*.tar.gz
-            chat-room-*.sha256
+          body: |
+            这是静态链接的 musl 二进制，服务器上不用编译。
+            升级时不要删除数据目录和主密钥。已有账号和消息会保留。步骤见 README。
+            如果仓库的 release/ 目录里已经有同名压缩包，这里上传的就是那一份。
+          files: dist-release/*

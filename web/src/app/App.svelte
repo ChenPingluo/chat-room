@@ -1,6 +1,7 @@
 <script>
   import { onMount } from "svelte";
   import { ApiError, RETENTION, api, fmt, retentionLabel } from "../lib/api.js";
+  import Atmosphere from "../lib/Atmosphere.svelte";
   import Icon from "../lib/Icon.svelte";
   import ThemeSwitch from "../lib/ThemeSwitch.svelte";
   import { getTheme, setTheme, subscribe } from "../lib/theme.js";
@@ -23,6 +24,8 @@
   let text = $state("");
   let login = $state({ username: "", password: "", totp: "", needTotp: false });
   let register = $state({ token: "", username: "", password: "", display_name: "" });
+  let registerBlocked = $state(false);
+  const loginUrl = `${location.origin}/#/login`;
   let search = $state("");
   let found = $state([]);
   let groupName = $state("");
@@ -60,9 +63,25 @@
     return friends.filter((friend) => !members.some((member) => member.id === friend.id));
   });
 
+  function safeDecode(value) {
+    try {
+      return decodeURIComponent(value);
+    } catch {
+      return value;
+    }
+  }
+
+  function targetPath() {
+    const hash = location.hash.replace(/^#/, "");
+    if (hash.startsWith("/")) return hash;
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/login" || path.startsWith("/register/")) return path;
+    return "/chats";
+  }
+
   function route() {
-    const hash = location.hash.replace(/^#/, "") || "/chats";
-    if (hash.startsWith("/register/")) return { name: "register", token: decodeURIComponent(hash.slice(10)) };
+    const hash = targetPath();
+    if (hash.startsWith("/register/")) return { name: "register", token: safeDecode(hash.slice(10)) };
     if (hash.startsWith("/chat/")) return { name: "chat", id: Number(hash.slice(6)) };
     if (hash === "/friends") return { name: "friends" };
     if (hash === "/settings") return { name: "settings" };
@@ -70,16 +89,41 @@
     return { name: "chats" };
   }
 
+  function canonicalize() {
+    const path = location.pathname.replace(/\/+$/, "") || "/";
+    if (path === "/login" || path.startsWith("/register/")) {
+      const next = `#${path}`;
+      if (location.hash !== next) history.replaceState(null, "", `/${location.search}${next}`);
+    }
+  }
+
   function go(hash) {
     location.hash = hash;
   }
 
+  function leaveSession() {
+    view = "login";
+    me = null;
+    conversations = [];
+    messages = [];
+    active = null;
+    detail = null;
+    info = false;
+    friends = [];
+    requests = [];
+    sessions = [];
+    found = [];
+    preview = "";
+    pendingCount = 0;
+    knownIncoming = 0;
+    const current = socket;
+    socket = undefined;
+    current?.close();
+    if (location.hash !== "#/login") location.hash = "#/login";
+  }
+
   function showError(err) {
-    if (err instanceof ApiError && err.status === 401 && me) {
-      socket?.close();
-      me = null;
-      view = "login";
-    }
+    if (err instanceof ApiError && err.status === 401 && me) leaveSession();
     error = err instanceof ApiError ? err.message : "网络异常";
   }
 
@@ -141,6 +185,7 @@
   }
 
   async function boot() {
+    canonicalize();
     const current = route();
     if (current.name === "register") register.token = current.token;
     try {
@@ -164,7 +209,9 @@
     error = "";
     if (!me) {
       view = current.name === "register" ? "register" : "login";
+      if (current.name === "register" && current.token && current.token !== register.token) registerBlocked = false;
       if (current.token) register.token = current.token;
+      if (current.name !== "register") registerBlocked = false;
       return;
     }
     if (current.name === "chat" && current.id) {
@@ -275,24 +322,29 @@
   async function submitRegister(event) {
     event.preventDefault();
     error = "";
+    registerBlocked = false;
     try {
       me = await api("/api/register", { method: "POST", body: register });
       await refresh();
       connect();
       go("#/chats");
     } catch (err) {
+      registerBlocked = err instanceof ApiError && err.message === "邀请无效";
       showError(err);
     }
   }
 
   async function logout() {
-    await run(async () => {
+    error = "";
+    try {
       await api("/api/logout", { method: "POST" });
-      me = null;
-      conversations = [];
-      socket?.close();
-      go("#/login");
-    });
+    } catch (err) {
+      if (!(err instanceof ApiError) || err.status !== 401) {
+        showError(err);
+        return;
+      }
+    }
+    leaveSession();
   }
 
   async function openChat(id) {
@@ -645,23 +697,27 @@
   {#if value > 0}<span class="count">{value > 99 ? "99+" : value}</span>{/if}
 {/snippet}
 
+<Atmosphere />
+<svelte:boundary onerror={(err) => console.error(err)}>
 {#if view === "boot" || view === "login" || view === "register"}
   <main class="gate">
     {#if view === "boot"}
-      <section class="card glass">
+      <section class="card glass boot-card" aria-busy="true" aria-label="正在打开">
         <div class="brand">
-          <img class="logo" src="/icon-192.png" alt="" />
-          <div>
-            <h1>聊天室</h1>
-            <p>正在打开…</p>
+          <span class="sk logo"></span>
+          <div class="sk-stack">
+            <span class="sk title"></span>
+            <span class="sk line"></span>
           </div>
         </div>
+        <span class="sk line"></span>
+        <span class="sk short"></span>
       </section>
     {:else if view === "login"}
       <form class="card glass" onsubmit={submitLogin}>
         <div class="card-top">
           <div class="brand">
-            <img class="logo" src="/icon-192.png" alt="" />
+            <img class="logo" src="/icon.svg" alt="" />
             <div>
               <h1>登录</h1>
               <p>只和你邀请的人说话</p>
@@ -676,13 +732,14 @@
         {/if}
         <p class="error" role="alert">{error}</p>
         <button class="submit">登录</button>
-        <p class="muted">没有账号时，需要管理员发给你的邀请链接。</p>
+        <p class="muted">有邀请链接？直接打开链接即可注册。</p>
+        <p class="hint">这就是登录入口。地址是 <code>{loginUrl}</code></p>
       </form>
     {:else}
       <form class="card glass" onsubmit={submitRegister}>
         <div class="card-top">
           <div class="brand">
-            <img class="logo" src="/icon-192.png" alt="" />
+            <img class="logo" src="/icon.svg" alt="" />
             <div>
               <h1>接受邀请</h1>
               <p>创建后即可进入聊天室</p>
@@ -690,19 +747,27 @@
           </div>
           <ThemeSwitch compact />
         </div>
-        <label class="field">用户名 <input bind:value={register.username} autocomplete="username" required /></label>
-        <label class="field">显示名称 <input bind:value={register.display_name} required /></label>
-        <label class="field">密码 <input type="password" bind:value={register.password} autocomplete="new-password" required /></label>
-        <p class="muted">密码至少 10 位。用户名注册后不能修改。</p>
-        <p class="error" role="alert">{error}</p>
-        <button class="submit">注册并登录</button>
+        {#if registerBlocked}
+          <div class="notice" role="alert">
+            <p>这个邀请链接已经用过、过期或作废了。</p>
+            <button type="button" onclick={() => go("#/login")}>去登录</button>
+          </div>
+        {:else}
+          <label class="field">用户名 <input bind:value={register.username} autocomplete="username" required /></label>
+          <label class="field">显示名称 <input bind:value={register.display_name} required /></label>
+          <label class="field">密码 <input type="password" bind:value={register.password} autocomplete="new-password" required /></label>
+          <p class="muted">密码至少 10 位。用户名注册后不能修改。</p>
+          <p class="error" role="alert">{error}</p>
+          <button class="submit">注册并登录</button>
+        {/if}
+        <p class="muted">已有账号？ <button type="button" class="linkish" onclick={() => go("#/login")}>去登录</button></p>
       </form>
     {/if}
   </main>
 {:else}
   <div class="shell pane-{view}" class:chat-open={view === "chat"}>
     <aside class="rail glass">
-      <img class="logo" src="/icon-192.png" alt="聊天室" />
+      <img class="logo" src="/icon.svg" alt="聊天室" />
       <nav aria-label="主导航">
         <button type="button" class="nav-btn" class:on={view === "chats" || view === "chat"} aria-current={view === "chats" || view === "chat" ? "page" : undefined} aria-label="消息" onclick={() => go("#/chats")}>
           <Icon name="chat" />
@@ -735,8 +800,8 @@
             </label>
           </div>
           <div class="list">
-            {#each visibleConversations as item (item.id)}
-              <button type="button" class="item" class:on={item.id === active} onclick={() => go(`#/chat/${item.id}`)}>
+            {#each visibleConversations as item, index (item.id)}
+              <button type="button" class="item" class:on={item.id === active} style="--i: {Math.min(index, 12)}" onclick={() => go(`#/chat/${item.id}`)}>
                 {@render avatar(item.title, item.title, false, item.kind === "group")}
                 <span class="item-body">
                   <span class="item-top">
@@ -820,7 +885,7 @@
             {/if}
           {:else}
             <div class="empty">
-              <img class="logo" src="/icon-192.png" alt="" />
+              <img class="logo" src="/icon.svg" alt="" />
               <h2>{active ? "正在打开会话…" : "选择一个会话"}</h2>
               <p>{error || "从左侧选一个聊天，或去好友页开始新的对话。"}</p>
               {#if !active}<button type="button" class="ghost" onclick={() => go("#/friends")}>去加好友</button>{/if}
@@ -860,7 +925,7 @@
                       <strong>{member.display_name}</strong>
                       <small class="muted">@{member.username}{#if detail.kind === "group"} · {member.role === "owner" ? "群主" : "成员"}{/if}{#if member.online} · 在线{/if}</small>
                     </span>
-                    {#if detail.role === "owner" && member.id !== me.id}
+                    {#if detail.role === "owner" && member.id !== me?.id}
                       <span class="actions">
                         <button type="button" class="ghost" onclick={() => transfer(member.id)}>转让</button>
                         <button type="button" class="danger" onclick={() => kick(member.id)}>移出</button>
@@ -899,8 +964,8 @@
                 <button>搜索</button>
               </form>
               <p class="error" role="alert">{error}</p>
-              {#each found as user (user.id)}
-                <div class="person">
+              {#each found as user, index (user.id)}
+                <div class="person" style="--i: {Math.min(index, 10)}">
                   {@render avatar(user.display_name, user.username, user.online, false)}
                   <span class="person-body"><strong>{user.display_name}</strong><br /><small class="muted">@{user.username} · {user.uid}</small></span>
                   <button type="button" onclick={() => addFriend(user.id)}>加好友</button>
@@ -909,8 +974,8 @@
             </section>
             <section class="panel">
               <h2>申请 {@render badge(pendingCount)}</h2>
-              {#each requests as item (item.id)}
-                <div class="person">
+              {#each requests as item, index (item.id)}
+                <div class="person" style="--i: {Math.min(index, 10)}">
                   {@render avatar(item.user.display_name, item.user.username, item.user.online, false)}
                   <span class="person-body"><strong>{item.incoming ? "来自" : "发给"} {item.user.display_name}</strong><br /><small class="muted">@{item.user.username}</small></span>
                   {#if item.incoming}
@@ -926,8 +991,8 @@
             </section>
             <section class="panel">
               <h2>好友</h2>
-              {#each friends as friend (friend.id)}
-                <div class="person">
+              {#each friends as friend, index (friend.id)}
+                <div class="person" style="--i: {Math.min(index, 10)}">
                   {@render avatar(friend.display_name, friend.username, friend.online, false)}
                   <span class="person-body">
                     <strong>{friend.display_name}</strong>
@@ -961,10 +1026,10 @@
             </section>
           </div>
         </section>
-      {:else}
+      {:else if me}
         <section class="canvas">
           <div class="board columns">
-            <section class="panel wide">
+            <section class="panel wide account">
               <div class="who">
                 {@render avatar(me.display_name, me.username, false, false)}
                 <div class="who-text">
@@ -976,6 +1041,7 @@
                 <code class="uid">{me.uid}</code>
                 <button type="button" class="ghost" onclick={() => copyValue(me.uid, " UID")}>复制 UID</button>
                 <button type="button" class="ghost" onclick={() => copyValue(`@${me.username}`, "用户名")}>复制用户名</button>
+                <button type="button" class="danger with-icon" onclick={logout}><Icon name="logout" size={18} /> 退出登录</button>
               </div>
               <p class="error" role="alert">{error}</p>
             </section>
@@ -1021,8 +1087,8 @@
             </section>
             <section class="panel wide">
               <h2>登录设备</h2>
-              {#each sessions as session (session.id)}
-                <div class="person">
+              {#each sessions as session, index (session.id)}
+                <div class="person" style="--i: {Math.min(index, 10)}">
                   <span class="avatar" style="--hue: 188"><Icon name="devices" size={18} /></span>
                   <span class="person-body">
                     <strong>{session.ip || "未知地址"}{session.current ? " · 当前" : ""}</strong>
@@ -1032,6 +1098,13 @@
                 </div>
               {/each}
             </section>
+          </div>
+        </section>
+      {:else}
+        <section class="canvas">
+          <div class="empty">
+            <h2>正在返回登录</h2>
+            <button type="button" onclick={() => go("#/login")}>去登录</button>
           </div>
         </section>
       {/if}
@@ -1072,3 +1145,19 @@
     <img src={preview} alt="原图预览" />
   </div>
 {/if}
+{#snippet failed(error, reset)}
+  <main class="gate">
+    <section class="card glass">
+      <div class="brand">
+        <img class="logo" src="/icon.svg" alt="" />
+        <div>
+          <h1>页面出错了</h1>
+          <p>{error?.message || "可以重新加载，或回到登录页。"}</p>
+        </div>
+      </div>
+      <button type="button" onclick={() => location.reload()}>重新加载</button>
+      <button type="button" class="ghost" onclick={() => { leaveSession(); reset(); }}>回到登录页</button>
+    </section>
+  </main>
+{/snippet}
+</svelte:boundary>

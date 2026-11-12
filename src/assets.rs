@@ -73,6 +73,7 @@ fn content_type_static(value: &str) -> &'static str {
         "text/html" => "text/html",
         "image/png" => "image/png",
         "image/jpeg" => "image/jpeg",
+        "image/svg+xml" => "image/svg+xml",
         "text/plain" => "text/plain",
         _ => "application/octet-stream",
     }

@@ -1,8 +1,10 @@
 <script>
   import { ApiError, api, fmt, retentionLabel } from "../lib/api.js";
+  import Atmosphere from "../lib/Atmosphere.svelte";
   import ThemeSwitch from "../lib/ThemeSwitch.svelte";
 
   let me = $state(null);
+  let booting = $state(true);
   let error = $state("");
   let tab = $state("status");
   let form = $state({ username: "", password: "", totp: "" });
@@ -45,6 +47,7 @@
     } catch {
       me = null;
     }
+    booting = false;
     if (me) await load();
   }
 
@@ -62,10 +65,15 @@
   async function logout() {
     try {
       await api("/api/logout", { method: "POST" });
-      me = null;
     } catch (err) {
-      showError(err);
+      if (!(err instanceof ApiError) || err.status !== 401) {
+        showError(err);
+        return;
+      }
     }
+    me = null;
+    tab = "status";
+    status = null;
   }
 
   async function select(next) {
@@ -161,12 +169,27 @@
   boot();
 </script>
 
-{#if !me}
+<Atmosphere />
+{#if booting}
+  <main class="gate">
+    <section class="card glass boot-card" aria-busy="true" aria-label="正在打开">
+      <div class="brand">
+        <span class="sk logo"></span>
+        <div class="sk-stack">
+          <span class="sk title"></span>
+          <span class="sk line"></span>
+        </div>
+      </div>
+      <span class="sk line"></span>
+      <span class="sk short"></span>
+    </section>
+  </main>
+{:else if !me}
   <main class="gate">
     <form class="card glass" onsubmit={login}>
       <div class="card-top">
         <div class="brand">
-          <img class="logo" src="/icon-192.png" alt="" />
+          <img class="logo" src="/icon.svg" alt="" />
           <div>
             <h1>管理后台</h1>
             <p>只监听本机。管理员必须开启两步验证。</p>
@@ -184,7 +207,7 @@
 {:else}
   <div class="shell admin">
     <header class="topbar glass">
-      <img class="logo" src="/icon-192.png" width="36" height="36" alt="" />
+      <img class="logo" src="/icon.svg" width="36" height="36" alt="" />
       <strong>管理</strong>
       <nav class="tabs" aria-label="管理分区">
         {#each tabs as [id, label] (id)}
@@ -196,6 +219,7 @@
       <button type="button" class="ghost" onclick={logout}>退出</button>
     </header>
     <main class="canvas">
+      {#key tab}
       <div class="board">
         <p class="error" role="alert">{error}</p>
         {#if tab === "status" && status}
@@ -304,6 +328,7 @@
           </div>
         {/if}
       </div>
+      {/key}
     </main>
   </div>
 {/if}
