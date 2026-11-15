@@ -209,7 +209,12 @@ async fn invites_friends_messages_and_retention() {
     let dir = crate::files::images_dir(dir.path());
     for name in names {
         let disk = std::fs::read(dir.join(&name)).unwrap();
-        assert_ne!(&disk[..2], &[0xff, 0xd8], "磁盘上不应保存未加密的 JPEG");
+        assert!(disk.len() >= 24, "加密后的图片不应过短");
+        assert_ne!(disk, stored);
+        assert!(
+            image::load_from_memory(&disk).is_err(),
+            "磁盘上不应保存未加密的 JPEG"
+        );
     }
 }
 
