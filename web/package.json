@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && node scripts/gzip.mjs"
+    "build": "vite build && node scripts/gzip.mjs",
+    "test": "node --test src/lib/route.test.js"
   },
   "devDependencies": {
     "@sveltejs/vite-plugin-svelte": "^7.3.1",

@@ -3,16 +3,35 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#e7eef2" />
+    <meta name="theme-color" content="#ffffff" />
     <meta name="description" content="私密聊天室" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/boot.css" />
     <title>聊天室</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main id="entry">
+        <form class="card" id="entry-form">
+          <h1>登录</h1>
+          <p>只和你邀请的人说话</p>
+          <label>用户名 <input name="username" autocomplete="username" required /></label>
+          <label>密码 <input name="password" type="password" autocomplete="current-password" required /></label>
+          <label class="totp">验证码 <input name="totp" inputmode="numeric" autocomplete="one-time-code" /></label>
+          <p class="error" id="entry-error" role="alert"></p>
+          <button type="submit">登录</button>
+          <p id="entry-note">正在打开聊天室…若页面没有继续加载，可直接在这里登录。</p>
+          <div class="actions">
+            <a href="/#/login">去登录</a>
+            <a href="/">重新加载</a>
+          </div>
+        </form>
+      </main>
+    </div>
+    <script src="/entry.js" defer></script>
     <script type="module" src="/src/app/main.js"></script>
   </body>
 </html>

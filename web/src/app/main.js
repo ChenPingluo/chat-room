@@ -4,10 +4,16 @@ import { initTheme } from "../lib/theme.js";
 import App from "./App.svelte";
 
 initTheme();
-mount(App, { target: document.getElementById("app") });
+const root = document.getElementById("app");
+mount(App, { target: root });
+document.getElementById("entry")?.remove();
+document.documentElement.dataset.ready = "1";
+window.dispatchEvent(new Event("chat-room-ready"));
 
 if ("serviceWorker" in navigator) {
-  navigator.serviceWorker.register("/sw.js").catch(() => {});
+  navigator.serviceWorker.register("/sw.js", { updateViaCache: "none" }).then((registration) => {
+    registration.update().catch(() => {});
+  }).catch(() => {});
 }
 
 const viewport = window.visualViewport;

@@ -3,14 +3,25 @@
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content" />
-    <meta name="theme-color" content="#e7eef2" />
+    <meta name="theme-color" content="#ffffff" />
     <link rel="icon" href="/icon.svg" type="image/svg+xml" />
     <link rel="icon" href="/icon-192.png" sizes="192x192" type="image/png" />
     <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link rel="stylesheet" href="/boot.css" />
     <title>聊天室管理</title>
   </head>
   <body>
-    <div id="app"></div>
+    <div id="app">
+      <main id="entry">
+        <section class="card">
+          <h1>管理后台</h1>
+          <p>正在打开登录页…</p>
+          <div class="actions">
+            <a href="/">重新加载</a>
+          </div>
+        </section>
+      </main>
+    </div>
     <script type="module" src="/src/admin/main.js"></script>
   </body>
 </html>

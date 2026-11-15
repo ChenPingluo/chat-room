@@ -1,5 +1,13 @@
-const CACHE = "shell-v4";
-const SHELL = ["/", "/index.html", "/manifest.webmanifest", "/icon.svg", "/icon-192.png", "/icon-512.png", "/apple-touch-icon.png"];
+const CACHE = "shell-v5";
+const SHELL = [
+  "/manifest.webmanifest",
+  "/icon.svg",
+  "/icon-192.png",
+  "/icon-512.png",
+  "/apple-touch-icon.png",
+  "/boot.css",
+  "/entry.js",
+];
 
 self.addEventListener("install", (event) => {
   event.waitUntil(caches.open(CACHE).then((cache) => cache.addAll(SHELL)).then(() => self.skipWaiting()));
@@ -11,10 +19,19 @@ self.addEventListener("activate", (event) => {
   );
 });
 
+function isHtml(url) {
+  return url.pathname === "/" || url.pathname.endsWith(".html") || url.pathname === "/sw.js";
+}
+
 self.addEventListener("fetch", (event) => {
   const url = new URL(event.request.url);
   if (event.request.method !== "GET" || url.origin !== location.origin) return;
-  if (url.pathname.startsWith("/api") || !SHELL.includes(url.pathname)) return;
+  if (url.pathname.startsWith("/api")) return;
+  if (isHtml(url)) {
+    event.respondWith(fetch(event.request));
+    return;
+  }
+  if (!SHELL.includes(url.pathname)) return;
   event.respondWith(
     fetch(event.request)
       .then((response) => {
@@ -43,7 +60,7 @@ self.addEventListener("notificationclick", (event) => {
   event.waitUntil(
     self.clients.matchAll({ type: "window", includeUncontrolled: true }).then((clients) => {
       if (clients.length) return clients[0].focus();
-      return self.clients.openWindow("/");
+      return self.clients.openWindow("/#/login");
     }),
   );
 });

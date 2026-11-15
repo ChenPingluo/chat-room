@@ -4,4 +4,8 @@ import { initTheme } from "../lib/theme.js";
 import Admin from "./Admin.svelte";
 
 initTheme();
-mount(Admin, { target: document.getElementById("app") });
+const root = document.getElementById("app");
+mount(Admin, { target: root });
+document.getElementById("entry")?.remove();
+document.documentElement.dataset.ready = "1";
+window.dispatchEvent(new Event("chat-room-ready"));

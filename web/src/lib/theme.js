@@ -1,5 +1,5 @@
 const KEY = "cr-theme";
-const COLORS = { light: "#e7eef2", dark: "#0c1216" };
+const COLORS = { light: "#ffffff", dark: "#0e1621" };
 
 let current = readStored();
 const listeners = new Set();
