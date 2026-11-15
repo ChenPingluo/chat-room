@@ -1,0 +1,13 @@
+{
+  "name": "chat-room-web",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "vite build && node scripts/gzip.mjs"
+  },
+  "devDependencies": {
+    "@sveltejs/vite-plugin-svelte": "^7.3.1",
+    "svelte": "^5.57.3",
+    "vite": "^8.3.7"
+  }
+}

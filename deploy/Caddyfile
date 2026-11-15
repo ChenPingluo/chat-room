@@ -1,0 +1,13 @@
+# 把域名换成你的。Caddy 会自动申请证书。
+# 管理后台不要写进这里，它只监听 127.0.0.1:8081。
+chat.example.com {
+	encode zstd gzip
+	reverse_proxy 127.0.0.1:8080
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		-Server
+	}
+	log {
+		output file /var/log/caddy/chat-room.log
+	}
+}
