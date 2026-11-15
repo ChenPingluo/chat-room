@@ -7,23 +7,38 @@ export class ApiError extends Error {
 }
 
 export async function api(path, options = {}) {
-  const request = { credentials: "same-origin", ...options };
+  const { timeout = 15000, signal, ...rest } = options;
+  const request = { credentials: "same-origin", ...rest };
   if (request.body && !(request.body instanceof FormData) && typeof request.body !== "string") {
     request.headers = { "content-type": "application/json", ...(request.headers || {}) };
     request.body = JSON.stringify(request.body);
   }
-  const response = await fetch(path, request);
-  const text = await response.text();
-  let data = null;
-  if (text) {
-    try {
-      data = JSON.parse(text);
-    } catch {
-      data = { error: "服务器返回了无法识别的内容" };
-    }
+  const ctrl = new AbortController();
+  const timer = timeout > 0 ? setTimeout(() => ctrl.abort(), timeout) : null;
+  if (signal) {
+    if (signal.aborted) ctrl.abort();
+    else signal.addEventListener("abort", () => ctrl.abort(), { once: true });
   }
-  if (!response.ok) throw new ApiError(data?.error || "请求失败", response.status, data);
-  return data;
+  try {
+    const response = await fetch(path, { ...request, signal: ctrl.signal });
+    const text = await response.text();
+    let data = null;
+    if (text) {
+      try {
+        data = JSON.parse(text);
+      } catch {
+        data = { error: "服务器返回了无法识别的内容" };
+      }
+    }
+    if (!response.ok) throw new ApiError(data?.error || "请求失败", response.status, data);
+    return data;
+  } catch (err) {
+    if (err instanceof ApiError) throw err;
+    if (err?.name === "AbortError") throw new ApiError("连接超时", 0);
+    throw new ApiError("网络异常", 0);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 }
 
 export function fmt(ts) {

@@ -1,0 +1,68 @@
+#entry {
+  min-height: 100%;
+  display: grid;
+  place-items: center;
+  padding: 24px 16px;
+  font: 15px/1.5 ui-sans-serif, system-ui, "Segoe UI", "PingFang SC", "Noto Sans SC", sans-serif;
+  color: #222;
+  background: #e8eef2;
+}
+#entry .card {
+  width: min(420px, 100%);
+  padding: 28px 24px;
+  border-radius: 16px;
+  background: #fff;
+  border: 1px solid #dfe4e8;
+  box-shadow: 0 8px 24px rgba(16, 36, 48, 0.08);
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+#entry h1 { margin: 0; font-size: 1.4rem; }
+#entry p { margin: 0; color: #707579; }
+#entry label { display: flex; flex-direction: column; gap: 6px; color: #707579; font-size: 0.92rem; }
+#entry input {
+  font: inherit;
+  color: #222;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 10px 12px;
+  border: 1px solid #dfe4e8;
+  border-radius: 10px;
+  background: #f4f4f5;
+}
+#entry button, #entry .actions a {
+  font: inherit;
+  border: 0;
+  border-radius: 10px;
+  padding: 11px 14px;
+  background: #3390ec;
+  color: #fff;
+  cursor: pointer;
+  text-align: center;
+  text-decoration: none;
+}
+#entry .actions { display: flex; gap: 8px; flex-wrap: wrap; }
+#entry .actions a { background: #f4f4f5; color: #222; }
+#entry .error { color: #e53935; min-height: 1.2em; }
+#entry .totp { display: none; }
+#entry.need-totp .totp { display: flex; }
+html[data-theme="dark"] #entry {
+  color: #f5f5f5;
+  background: #0e1621;
+}
+html[data-theme="dark"] #entry .card {
+  background: #17212b;
+  border-color: #242f3d;
+  box-shadow: none;
+}
+html[data-theme="dark"] #entry input {
+  color: #f5f5f5;
+  background: #242f3d;
+  border-color: #242f3d;
+}
+html[data-theme="dark"] #entry .actions a {
+  background: #242f3d;
+  color: #f5f5f5;
+}
+html[data-ready] #entry { display: none; }

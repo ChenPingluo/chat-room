@@ -209,7 +209,12 @@ async fn invites_friends_messages_and_retention() {
     let dir = crate::files::images_dir(dir.path());
     for name in names {
         let disk = std::fs::read(dir.join(&name)).unwrap();
-        assert_ne!(&disk[..2], &[0xff, 0xd8], "磁盘上不应保存未加密的 JPEG");
+        assert!(disk.len() >= 24, "加密后的图片不应过短");
+        assert_ne!(disk, stored);
+        assert!(
+            image::load_from_memory(&disk).is_err(),
+            "磁盘上不应保存未加密的 JPEG"
+        );
     }
 }
 
@@ -262,6 +267,7 @@ async fn http_login_roundtrip() {
     let json: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(json["username"], "Carol");
     let friends = router
+        .clone()
         .oneshot(
             Request::builder()
                 .uri("/api/friends")
@@ -272,6 +278,120 @@ async fn http_login_roundtrip() {
         .await
         .unwrap();
     assert_eq!(friends.status(), StatusCode::OK);
+
+    let cookie_header = cookie.split(';').next().unwrap();
+    let logged_out = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/logout")
+                .header("cookie", cookie_header)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logged_out.status(), StatusCode::NO_CONTENT);
+    let after_logout = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/me")
+                .header("cookie", cookie_header)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(after_logout.status(), StatusCode::UNAUTHORIZED);
+
+    let login = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(
+                    r#"{"username":"Carol","password":"password-carol"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let login_cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .to_string();
+    let me_again = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/me")
+                .header("cookie", login_cookie.split(';').next().unwrap())
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(me_again.status(), StatusCode::OK);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn spa_guest_routes_serve_login_page() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut opened = App::open(dir.path(), "correct-passphrase", "https://chat.example").unwrap();
+    opened.insecure_cookies = true;
+    let app = Arc::new(opened);
+    let router = crate::http::wrap(crate::http::router()).with_state(Arc::clone(&app));
+    for path in ["/", "/login", "/index.html"] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(path)
+                    .header("host", "chat.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "{path}");
+        let content_type = response
+            .headers()
+            .get("content-type")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(content_type.contains("text/html"), "{path} {content_type}");
+        let cache = response
+            .headers()
+            .get("cache-control")
+            .and_then(|value| value.to_str().ok())
+            .unwrap_or("");
+        assert!(cache.contains("no-cache"), "{path} {cache}");
+        let body = String::from_utf8(
+            response
+                .into_body()
+                .collect()
+                .await
+                .unwrap()
+                .to_bytes()
+                .to_vec(),
+        )
+        .unwrap();
+        assert!(body.contains("登录"), "{path} 应包含登录文案");
+        assert!(body.contains("password"), "{path} 应包含密码框");
+        assert!(body.contains("/entry.js"), "{path} 应带上静态登录脚本");
+    }
 }
 
 fn make_invite(app: &App) -> String {

@@ -12,6 +12,7 @@
 - 可以撤回自己的消息（所有人看到“消息已撤回”，服务器上的正文和图片立即删除），也可以只从自己这边删除。
 - 上传的图片会重新编码成 JPEG、缩到最长边 2048 像素，并去掉 EXIF/GPS。原图不会写入磁盘。
 - 可选的浏览器推送只写“你有新消息”，不包含正文和发送者。
+- 界面是两栏的会话列表和聊天窗口，外观接近 Telegram Desktop / Telegram Web：实色背景、克制的蓝色、没有毛玻璃和漂浮色块。窄屏一次只显示列表或聊天。
 
 ## 安全模型
 
@@ -23,9 +24,9 @@
 
 ## 登录
 
-打开域名就会进入登录页。地址是 `https://你的域名/#/login`，写成 `https://你的域名/login` 也一样。注册页上有「已有账号？去登录」。邀请链接用过、过期或作废时，页面会直接说明，并给出登录按钮。
+打开域名就会进入登录页，页面上是用户名和密码。地址是 `https://你的域名/#/login`，写成 `https://你的域名/login` 也一样。注册页上有「已有账号？去登录」。邀请链接用过、过期或作废时，页面会直接说明，并给出登录按钮。
 
-手机上的退出在「设置」页顶部。桌面端左侧栏最下面也有退出。退出之后再打开域名，会回到登录页。没有账号时，只能用管理员发给你的邀请链接注册。
+手机上的退出在「设置」页。桌面端设置页和账号卡片里也可以退出。退出之后会回到登录页；再打开域名也是登录页，已有账号直接登录，不需要新的邀请。页面出错时可以重新加载或回到登录，不会停在空白页。没有账号时，只能用管理员发给你的邀请链接注册。
 
 ## 管理后台
 
@@ -82,6 +83,22 @@ chat-room check --data-dir /var/lib/chat-room
 8. 把 `deploy/Caddyfile` 里的域名改成你的，放到 Caddy 配置里并重载。只反代 `127.0.0.1:8080`。不要公开 8081。
 
 升级时重新执行 `install.sh`，然后 `sudo systemctl restart chat-room`。已存在的 systemd 单元不会被覆盖。主密钥和 `/var/lib/chat-room` 不要删。
+
+### 从 v0.2.1 升级到 v0.2.2
+
+这次只改了前端界面和未登录入口，没有改数据库、接口、Cookie 和 systemd 单元。已有账号、登录状态和消息都会留着。不要删除 `/var/lib/chat-room` 和 `/etc/chat-room/master.key`。服务器上不需要编译，下载后替换二进制再重启即可。
+
+```sh
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.2/chat-room-v0.2.2-x86_64-linux-musl.tar.gz
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.2/chat-room-v0.2.2-x86_64-linux-musl.tar.gz.sha256
+sha256sum -c chat-room-v0.2.2-x86_64-linux-musl.tar.gz.sha256
+tar -xzf chat-room-v0.2.2-x86_64-linux-musl.tar.gz
+cd chat-room-v0.2.2
+sudo ./deploy/install.sh
+sudo systemctl restart chat-room
+```
+
+仓库的 `release/` 目录仍保留 v0.2.1 的压缩包。v0.2.2 的静态包由打 `v0.2.2` 标签后的 GitHub Actions 编译上传。
 
 ### 从 v0.2.0 升级到 v0.2.1
 

@@ -1,10 +1,9 @@
 <script>
   import { ApiError, api, fmt, retentionLabel } from "../lib/api.js";
-  import Atmosphere from "../lib/Atmosphere.svelte";
   import ThemeSwitch from "../lib/ThemeSwitch.svelte";
 
   let me = $state(null);
-  let booting = $state(true);
+  let booting = $state(false);
   let error = $state("");
   let tab = $state("status");
   let form = $state({ username: "", password: "", totp: "" });
@@ -43,7 +42,7 @@
 
   async function boot() {
     try {
-      me = await api("/api/me");
+      me = await api("/api/me", { timeout: 8000 });
     } catch {
       me = null;
     }
@@ -66,10 +65,7 @@
     try {
       await api("/api/logout", { method: "POST" });
     } catch (err) {
-      if (!(err instanceof ApiError) || err.status !== 401) {
-        showError(err);
-        return;
-      }
+      if (!(err instanceof ApiError) || err.status !== 401) showError(err);
     }
     me = null;
     tab = "status";
@@ -169,24 +165,29 @@
   boot();
 </script>
 
-<Atmosphere />
 {#if booting}
   <main class="gate">
-    <section class="card glass boot-card" aria-busy="true" aria-label="正在打开">
-      <div class="brand">
-        <span class="sk logo"></span>
-        <div class="sk-stack">
-          <span class="sk title"></span>
-          <span class="sk line"></span>
+    <form class="card" onsubmit={login}>
+      <div class="card-top">
+        <div class="brand">
+          <img class="logo" src="/icon.svg" alt="" />
+          <div>
+            <h1>管理后台</h1>
+            <p>正在确认登录状态…</p>
+          </div>
         </div>
+        <ThemeSwitch compact />
       </div>
-      <span class="sk line"></span>
-      <span class="sk short"></span>
-    </section>
+      <label class="field">用户名 <input bind:value={form.username} placeholder="用户名" autocomplete="username" required /></label>
+      <label class="field">密码 <input type="password" bind:value={form.password} placeholder="密码" autocomplete="current-password" required /></label>
+      <label class="field">验证码 <input bind:value={form.totp} placeholder="验证码" inputmode="numeric" autocomplete="one-time-code" required /></label>
+      <p class="error" role="alert">{error}</p>
+      <button class="submit">登录</button>
+    </form>
   </main>
 {:else if !me}
   <main class="gate">
-    <form class="card glass" onsubmit={login}>
+    <form class="card" onsubmit={login}>
       <div class="card-top">
         <div class="brand">
           <img class="logo" src="/icon.svg" alt="" />
@@ -206,7 +207,7 @@
   </main>
 {:else}
   <div class="shell admin">
-    <header class="topbar glass">
+    <header class="topbar">
       <img class="logo" src="/icon.svg" width="36" height="36" alt="" />
       <strong>管理</strong>
       <nav class="tabs" aria-label="管理分区">
