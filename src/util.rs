@@ -99,6 +99,7 @@ pub const RET_DAY: i64 = 86_400;
 pub const RET_WEEK: i64 = 604_800;
 pub const RET_MONTH: i64 = 2_592_000;
 pub const GROUP_LIMIT: i64 = 100;
+pub const INVITE_LIMIT: i64 = 5;
 pub const SESSION_SECS: i64 = 14 * 86_400;
 pub const MAX_UPLOAD: usize = 25 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 25_000_000;

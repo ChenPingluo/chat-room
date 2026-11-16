@@ -1,5 +1,6 @@
 <script>
   import { ApiError, api, fmt, retentionLabel } from "../lib/api.js";
+  import { capExplanation, invitedLabel, quotaSummary } from "../lib/invite.js";
   import ThemeSwitch from "../lib/ThemeSwitch.svelte";
 
   let me = $state(null);
@@ -10,6 +11,7 @@
   let status = $state(null);
   let users = $state([]);
   let invites = $state([]);
+  let inviteQuota = $state({ limit: 5, used: 0, reserved: 0, remaining: 5 });
   let conversations = $state([]);
   let audit = $state([]);
   let created = $state(null);
@@ -32,7 +34,16 @@
     try {
       if (tab === "status") status = await api("/api/status");
       if (tab === "users") users = (await api("/api/users")).users;
-      if (tab === "invites") invites = (await api("/api/invites")).invites;
+      if (tab === "invites") {
+        const data = await api("/api/invites");
+        invites = data.invites;
+        inviteQuota = {
+          limit: data.limit,
+          used: data.used,
+          reserved: data.reserved,
+          remaining: data.remaining,
+        };
+      }
       if (tab === "conversations") conversations = (await api("/api/conversations")).conversations;
       if (tab === "audit") audit = (await api("/api/audit")).audit;
     } catch (err) {
@@ -239,10 +250,15 @@
         {:else if tab === "invites"}
           <section class="panel">
             <h2>生成邀请</h2>
+            <p class="muted">每位管理员自己也有 5 个名额。{invitedLabel(inviteQuota)}{#if quotaSummary(inviteQuota).reserved > 0}，另有 {quotaSummary(inviteQuota).reserved} 个待使用邀请码占用名额{/if}。</p>
+            {#if quotaSummary(inviteQuota).atCap}
+              <p class="muted">{capExplanation(inviteQuota)}</p>
+            {:else}
             <form class="row" onsubmit={createInvite}>
               <input class="narrow" type="number" min="1" max="30" bind:value={days} aria-label="有效天数" />
               <button>生成 {days} 天邀请</button>
             </form>
+            {/if}
             {#if created}
               <p>链接只显示一次：</p>
               <code>{created.url}</code>

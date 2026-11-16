@@ -267,7 +267,7 @@ async fn create_invite(
     body: Body,
 ) -> Result<Json<serde_json::Value>, AppErr> {
     let body: InviteBody = read_json(body).await?;
-    let (id, token, expires) = app.with_db(|conn| {
+    let (id, token, expires, quota) = app.with_db(|conn| {
         let created = repo::create_invite(conn, user.0.user.id, body.days.unwrap_or(7))?;
         repo::audit(
             conn,
@@ -276,7 +276,8 @@ async fn create_invite(
             &created.0.to_string(),
             util::now(),
         )?;
-        Ok(created)
+        let quota = repo::invite_quota(conn, user.0.user.id)?;
+        Ok((created.0, created.1, created.2, quota))
     })?;
     Ok(Json(json!({
         "id": id,
@@ -284,23 +285,38 @@ async fn create_invite(
         "expires_at": expires,
         "path": format!("/#/register/{token}"),
         "url": app.invite_link(&token),
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
     })))
 }
 
 async fn invites(
     State(app): State<Arc<App>>,
-    _user: AdminUser,
+    user: AdminUser,
 ) -> Result<Json<serde_json::Value>, AppErr> {
-    let rows = app.with_db(|conn| repo::list_invites(conn))?;
-    Ok(Json(json!({"invites": rows.iter().map(|row| json!({
-        "id": row.id,
-        "created_at": row.created_at,
-        "expires_at": row.expires_at,
-        "revoked": row.revoked,
-        "creator": row.creator,
-        "used_by": row.used_by,
-        "used_at": row.used_at,
-    })).collect::<Vec<_>>() })))
+    let (quota, rows) = app.with_db(|conn| {
+        Ok((
+            repo::invite_quota(conn, user.0.user.id)?,
+            repo::list_invites(conn)?,
+        ))
+    })?;
+    Ok(Json(json!({
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
+        "invites": rows.iter().map(|row| json!({
+            "id": row.id,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "revoked": row.revoked,
+            "creator": row.creator,
+            "used_by": row.used_by,
+            "used_at": row.used_at,
+        })).collect::<Vec<_>>()
+    })))
 }
 
 async fn revoke_invite(

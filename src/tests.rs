@@ -394,6 +394,334 @@ async fn spa_guest_routes_serve_login_page() {
     }
 }
 
+#[tokio::test(flavor = "current_thread")]
+async fn hierarchical_invites_quota_and_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut opened = App::open(dir.path(), "correct-passphrase", "https://chat.example").unwrap();
+    opened.insecure_cookies = true;
+    let app = Arc::new(opened);
+    let router = crate::http::wrap(crate::http::router()).with_state(Arc::clone(&app));
+
+    let seed = make_invite(&app);
+    let (alice, _) = app
+        .register(
+            &seed,
+            "Alice",
+            "password-alice",
+            "爱丽丝",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+
+    let bob_token = app
+        .with_db(|conn| {
+            let (_id, token, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+            Ok::<_, crate::error::AppErr>(token)
+        })
+        .unwrap();
+    let (bob, _) = app
+        .register(
+            &bob_token,
+            "Bob",
+            "password-bob-ok",
+            "鲍勃",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+    let carol_token = app
+        .with_db(|conn| {
+            let (_id, token, _) = crate::repo::create_invite(conn, bob.id, 7)?;
+            Ok::<_, crate::error::AppErr>(token)
+        })
+        .unwrap();
+    let (carol, _) = app
+        .register(
+            &carol_token,
+            "Carol",
+            "password-carol",
+            "卡罗",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+
+    let invited_by = |user_id: i64| {
+        app.with_db(|conn| {
+            conn.query_row(
+                "SELECT invited_by FROM users WHERE id=?1",
+                [user_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(crate::error::AppErr::from)
+        })
+        .unwrap()
+    };
+    assert_eq!(invited_by(bob.id), Some(alice.id));
+    assert_eq!(invited_by(carol.id), Some(bob.id));
+    let alice_invitees = app
+        .with_db(|conn| crate::repo::list_invitees(conn, alice.id))
+        .unwrap();
+    assert_eq!(alice_invitees.len(), 1);
+    assert_eq!(alice_invitees[0].username, "Bob");
+    let bob_invitees = app
+        .with_db(|conn| crate::repo::list_invitees(conn, bob.id))
+        .unwrap();
+    assert_eq!(bob_invitees.len(), 1);
+    assert_eq!(bob_invitees[0].username, "Carol");
+    let carol_quota = app
+        .with_db(|conn| crate::repo::invite_quota(conn, carol.id))
+        .unwrap();
+    assert_eq!(carol_quota.limit, 5);
+    assert_eq!(carol_quota.used, 0);
+    assert_eq!(carol_quota.remaining, 5);
+
+    let pending_ids: Vec<i64> = (0..4)
+        .map(|_| {
+            app.with_db(|conn| {
+                let (id, _, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+                Ok::<_, crate::error::AppErr>(id)
+            })
+            .unwrap()
+        })
+        .collect();
+    let quota = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(quota.used, 1);
+    assert_eq!(quota.reserved, 4);
+    assert_eq!(quota.remaining, 0);
+    let sixth = app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7));
+    match sixth {
+        Err(crate::error::AppErr::Conflict(message)) => {
+            assert_eq!(message, "邀请名额已用完，每人最多成功邀请 5 人");
+        }
+        other => panic!("第六个邀请应被拒绝，实际是 {other:?}"),
+    }
+
+    app.with_db(|conn| crate::repo::revoke_invite(conn, pending_ids[0]))
+        .unwrap();
+    let after_revoke = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(after_revoke.reserved, 3);
+    assert_eq!(after_revoke.remaining, 1);
+    app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7))
+        .unwrap();
+
+    let expire_id = pending_ids[1];
+    app.with_db(|conn| {
+        conn.execute("UPDATE invites SET expires_at=1 WHERE id=?1", [expire_id])?;
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+    let after_expire = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(after_expire.remaining, 1);
+    app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7))
+        .unwrap();
+    app.with_db(|conn| {
+        conn.execute(
+            "UPDATE invites SET revoked=1 WHERE created_by=?1 AND used_by IS NULL AND revoked=0",
+            [alice.id],
+        )?;
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+
+    for n in 2..6 {
+        let token = app
+            .with_db(|conn| {
+                let (_, token, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+                Ok::<_, crate::error::AppErr>(token)
+            })
+            .unwrap();
+        app.register(
+            &token,
+            &format!("User{n}"),
+            "password-user-ok",
+            &format!("用户{n}"),
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+    let full = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(full.used, 5);
+    assert_eq!(full.remaining, 0);
+    match app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7)) {
+        Err(crate::error::AppErr::Conflict(message)) => {
+            assert_eq!(message, "邀请名额已用完，每人最多成功邀请 5 人");
+        }
+        other => panic!("第 6 次成功邀请应被拒绝，实际是 {other:?}"),
+    }
+
+    app.with_db(|conn| {
+        for n in 0..6 {
+            conn.execute(
+                "INSERT INTO invites (token_hash, created_by, created_at, expires_at, revoked, used_by, used_at)
+                 VALUES (?1, ?2, 10, 9999999999, 0, ?3, 10)",
+                rusqlite::params![unique_hash(n), bob.id, 10_000 + i64::from(n)],
+            )?;
+        }
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+    let over = app
+        .with_db(|conn| crate::repo::invite_quota(conn, bob.id))
+        .unwrap();
+    assert!(over.used > 5, "历史超额应保留，实际 used={}", over.used);
+    assert_eq!(over.remaining, 0);
+    assert!(app
+        .with_db(|conn| crate::repo::create_invite(conn, bob.id, 7))
+        .is_err());
+
+    let login = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(
+                    r#"{"username":"Carol","password":"password-carol"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body = created.into_body().collect().await.unwrap().to_bytes();
+    let created_json: serde_json::Value = serde_json::from_slice(&created_body).unwrap();
+    assert!(created_json["url"]
+        .as_str()
+        .unwrap()
+        .contains("/#/register/"));
+    assert_eq!(created_json["remaining"], 4);
+
+    let listed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/invites")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_body = listed.into_body().collect().await.unwrap().to_bytes();
+    let listed_json: serde_json::Value = serde_json::from_slice(&listed_body).unwrap();
+    assert_eq!(listed_json["limit"], 5);
+    assert_eq!(listed_json["reserved"], 1);
+
+    let alice_login = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(
+                    r#"{"username":"Alice","password":"password-alice"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let alice_cookie = alice_login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let blocked = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("cookie", &alice_cookie)
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let blocked_body = blocked.into_body().collect().await.unwrap().to_bytes();
+    let blocked_json: serde_json::Value = serde_json::from_slice(&blocked_body).unwrap();
+    assert_eq!(
+        blocked_json["error"],
+        "邀请名额已用完，每人最多成功邀请 5 人"
+    );
+
+    let anon = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+}
+
+fn unique_hash(n: u8) -> Vec<u8> {
+    let mut hash = vec![0u8; 32];
+    hash[0] = n;
+    hash[1] = 0xff;
+    hash
+}
+
 fn make_invite(app: &App) -> String {
     app.with_db(|conn| {
         let (_id, token, _exp) = crate::repo::create_invite(conn, 0, 7)?;

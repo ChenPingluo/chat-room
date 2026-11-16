@@ -607,6 +607,13 @@ input.narrow { width: 96px; flex: none; }
 }
 .check input { width: auto; }
 .check.on { border-color: var(--accent); background: var(--accent-soft); }
+.invite-url { display: block; }
+.invite-panel > button { align-self: flex-start; }
+.section-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
 .avatar {
   position: relative;
   width: 42px;

@@ -20,6 +20,7 @@
     useSheetMenu,
   } from "../lib/message-actions.js";
   import { avatarHue, avatarText, shortTime } from "../lib/ui.js";
+  import { capExplanation, invitedLabel, pendingInvites, quotaSummary } from "../lib/invite.js";
 
   let me = $state(null);
   let view = $state(guestView(parseRoute(window.location)));
@@ -47,6 +48,12 @@
   let passwords = $state({ old_password: "", new_password: "" });
   let totp = $state(null);
   let totpCode = $state("");
+  let inviteQuota = $state({ limit: 5, used: 0, reserved: 0, remaining: 5 });
+  let myInvites = $state([]);
+  let invitees = $state([]);
+  let createdInvite = $state(null);
+  let inviteDays = $state(7);
+  let inviteCopied = $state(false);
   let scroller = $state(null);
   let composer = $state(null);
   let convoQuery = $state("");
@@ -81,6 +88,8 @@
     const members = detail?.members || [];
     return friends.filter((friend) => !members.some((member) => member.id === friend.id));
   });
+  let inviteView = $derived(quotaSummary(inviteQuota));
+  let pendingMine = $derived(pendingInvites(myInvites));
 
   function route() {
     return parseRoute(window.location);
@@ -108,6 +117,11 @@
     sessions = [];
     found = [];
     preview = "";
+    inviteQuota = { limit: 5, used: 0, reserved: 0, remaining: 5 };
+    myInvites = [];
+    invitees = [];
+    createdInvite = null;
+    inviteCopied = false;
     closeMsgUi();
     pendingCount = 0;
     knownIncoming = 0;
@@ -341,6 +355,49 @@
     if (msgConfirm && !target?.closest(".msg-confirm")) msgConfirm = null;
   }
 
+  async function loadInvites() {
+    const data = await api("/api/invites");
+    inviteQuota = {
+      limit: data.limit,
+      used: data.used,
+      reserved: data.reserved,
+      remaining: data.remaining,
+    };
+    myInvites = data.invites || [];
+    invitees = data.invitees || [];
+  }
+
+  async function createInvite(event) {
+    event.preventDefault();
+    await run(async () => {
+      inviteCopied = false;
+      createdInvite = await api("/api/invites", { method: "POST", body: { days: Number(inviteDays) || 7 } });
+      inviteQuota = {
+        limit: createdInvite.limit,
+        used: createdInvite.used,
+        reserved: createdInvite.reserved,
+        remaining: createdInvite.remaining,
+      };
+      await loadInvites();
+      notify("邀请链接已生成");
+    });
+  }
+
+  async function copyInvite() {
+    if (!createdInvite?.url) return;
+    await copyValue(createdInvite.url, "邀请链接");
+    inviteCopied = true;
+  }
+
+  async function revokeInvite(id) {
+    await run(async () => {
+      await api(`/api/invites/${id}/revoke`, { method: "POST" });
+      if (createdInvite?.id === id) createdInvite = null;
+      await loadInvites();
+      notify("已作废邀请码");
+    });
+  }
+
   async function copyValue(value, label) {
     try {
       await navigator.clipboard.writeText(value);
@@ -411,7 +468,10 @@
       view = current.name;
       active = null;
       if (current.name === "friends") await loadFriends();
-      if (current.name === "settings") sessions = (await api("/api/me/sessions")).sessions;
+      if (current.name === "settings") {
+        sessions = (await api("/api/me/sessions")).sessions;
+        await loadInvites();
+      }
     } else {
       view = "chats";
       active = null;
@@ -1300,6 +1360,55 @@
                 <button type="button" class="danger with-icon" onclick={logout}><Icon name="logout" size={18} /> 退出登录</button>
               </div>
               <p class="error" role="alert">{error}</p>
+            </section>
+            <section class="panel wide invite-panel">
+              <h2>邀请好友</h2>
+              <p class="muted">任何注册用户都可以邀请别人。每人最多成功邀请 {inviteView.limit} 人；被邀请的人注册后也有自己的名额。</p>
+              <div class="row">
+                <span class="tag" class:warn={inviteView.atCap} class:ok={!inviteView.atCap}>{invitedLabel(inviteQuota)}</span>
+                {#if inviteView.reserved > 0}
+                  <span class="tag quiet">待使用 {inviteView.reserved} 个邀请码</span>
+                {/if}
+              </div>
+              {#if inviteView.atCap}
+                <p class="muted">{capExplanation(inviteQuota)}</p>
+              {:else}
+                <form class="row" onsubmit={createInvite}>
+                  <input class="narrow" type="number" min="1" max="30" bind:value={inviteDays} aria-label="有效天数" />
+                  <button>生成 {inviteDays} 天邀请</button>
+                </form>
+              {/if}
+              {#if createdInvite}
+                <p>链接只显示一次，发给对方即可注册：</p>
+                <code class="invite-url">{createdInvite.url}</code>
+                <button type="button" class="ghost with-icon" onclick={copyInvite}>
+                  <Icon name="copy" size={16} /> {inviteCopied ? "已复制" : "复制链接"}
+                </button>
+              {/if}
+              {#if invitees.length}
+                <p class="section-label">已邀请的人</p>
+                {#each invitees as person, index (person.id)}
+                  <div class="person" style="--i: {Math.min(index, 10)}">
+                    {@render avatar(person.display_name, person.username, false, false)}
+                    <span class="person-body">
+                      <strong>{person.display_name}</strong>
+                      <br /><small class="muted">@{person.username}</small>
+                    </span>
+                  </div>
+                {/each}
+              {/if}
+              {#if pendingMine.length}
+                <p class="section-label">未使用的邀请码</p>
+                {#each pendingMine as invite (invite.id)}
+                  <div class="person">
+                    <span class="person-body">
+                      <strong>待使用</strong>
+                      <br /><small class="muted">到期 {fmt(invite.expires_at)}</small>
+                    </span>
+                    <button type="button" class="danger" onclick={() => revokeInvite(invite.id)}>作废</button>
+                  </div>
+                {/each}
+              {/if}
             </section>
             <section class="panel">
               <h2>外观</h2>

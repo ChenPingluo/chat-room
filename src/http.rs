@@ -101,6 +101,8 @@ pub fn router() -> Router<Arc<App>> {
             "/api/me/sessions/{id}",
             axum::routing::delete(revoke_session),
         )
+        .route("/api/invites", get(invites).post(create_invite))
+        .route("/api/invites/{id}/revoke", post(revoke_invite))
         .route("/api/users/search", post(search))
         .route("/api/friends", get(friends))
         .route("/api/friends/requests", get(requests).post(friend_request))
@@ -231,6 +233,72 @@ async fn logout(State(app): State<Arc<App>>, user: AppUser) -> Response {
 
 async fn me(user: AppUser) -> Json<crate::models::UserOut> {
     Json(crate::models::UserOut::from(&user.0.user))
+}
+
+#[derive(Deserialize)]
+struct InviteBody {
+    days: Option<i64>,
+}
+
+async fn create_invite(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+    body: Body,
+) -> Result<Json<serde_json::Value>, AppErr> {
+    let body: InviteBody = read_json(body).await?;
+    let (id, token, expires, quota) = app.with_db(|conn| {
+        let created = crate::repo::create_invite(conn, user.0.user.id, body.days.unwrap_or(7))?;
+        let quota = crate::repo::invite_quota(conn, user.0.user.id)?;
+        Ok((created.0, created.1, created.2, quota))
+    })?;
+    Ok(Json(json!({
+        "id": id,
+        "token": token,
+        "expires_at": expires,
+        "path": format!("/#/register/{token}"),
+        "url": app.invite_link(&token),
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
+    })))
+}
+
+async fn invites(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+) -> Result<Json<serde_json::Value>, AppErr> {
+    let (quota, rows, invitees) = app.with_db(|conn| {
+        Ok((
+            crate::repo::invite_quota(conn, user.0.user.id)?,
+            crate::repo::list_user_invites(conn, user.0.user.id)?,
+            crate::repo::list_invitees(conn, user.0.user.id)?,
+        ))
+    })?;
+    Ok(Json(json!({
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
+        "invites": rows.iter().map(|row| json!({
+            "id": row.id,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "revoked": row.revoked,
+            "used_by": row.used_by,
+            "used_at": row.used_at,
+        })).collect::<Vec<_>>(),
+        "invitees": invitees,
+    })))
+}
+
+async fn revoke_invite(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppErr> {
+    app.with_db(|conn| crate::repo::revoke_user_invite(conn, user.0.user.id, id))?;
+    Ok(StatusCode::NO_CONTENT)
 }
 
 #[derive(Deserialize)]

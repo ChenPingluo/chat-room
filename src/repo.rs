@@ -49,6 +49,23 @@ pub struct InviteRow {
     pub used_at: Option<i64>,
 }
 
+#[derive(Serialize, Clone, Copy)]
+pub struct InviteQuota {
+    pub limit: i64,
+    pub used: i64,
+    pub reserved: i64,
+    pub remaining: i64,
+}
+
+#[derive(Serialize)]
+pub struct InviteeRow {
+    pub id: i64,
+    pub uid: String,
+    pub username: String,
+    pub display_name: String,
+    pub created_at: i64,
+}
+
 pub struct SessionRow {
     pub id: i64,
     pub created_at: i64,
@@ -403,7 +420,7 @@ pub fn register(
     let tx = conn.transaction()?;
     let invite = tx
         .query_row(
-            "SELECT id, expires_at, revoked, used_by FROM invites WHERE token_hash=?1",
+            "SELECT id, expires_at, revoked, used_by, created_by FROM invites WHERE token_hash=?1",
             [&hash],
             |row| {
                 Ok((
@@ -411,11 +428,12 @@ pub fn register(
                     row.get::<_, i64>(1)?,
                     row.get::<_, i64>(2)?,
                     row.get::<_, Option<i64>>(3)?,
+                    row.get::<_, Option<i64>>(4)?,
                 ))
             },
         )
         .optional()?;
-    let Some((id, expires, revoked, used)) = invite else {
+    let Some((id, expires, revoked, used, created_by)) = invite else {
         return Err(AppErr::BadRequest("邀请无效"));
     };
     if !invite_open(revoked, used, expires, at) {
@@ -431,6 +449,12 @@ pub fn register(
         false,
         at,
     )?;
+    if let Some(inviter) = created_by.filter(|id| *id > 0) {
+        tx.execute(
+            "UPDATE users SET invited_by=?1 WHERE id=?2",
+            params![inviter, user.id],
+        )?;
+    }
     tx.execute(
         "UPDATE invites SET used_by=?1, used_at=?2 WHERE id=?3 AND used_by IS NULL AND revoked=0",
         params![user.id, at, id],
@@ -443,8 +467,8 @@ pub fn register(
 }
 
 pub fn create_invite(
-    conn: &Connection,
-    admin_id: i64,
+    conn: &mut Connection,
+    user_id: i64,
     days: i64,
 ) -> Result<(i64, String, i64), AppErr> {
     if !(1..=30).contains(&days) {
@@ -453,38 +477,110 @@ pub fn create_invite(
     let token = b64(&random_bytes::<32>());
     let at = now();
     let expires = at + days * 86_400;
-    conn.execute(
+    let tx = conn.transaction()?;
+    let quota = invite_quota_at(&tx, user_id, at)?;
+    if quota.remaining <= 0 {
+        return Err(AppErr::Conflict("邀请名额已用完，每人最多成功邀请 5 人"));
+    }
+    tx.execute(
         "INSERT INTO invites (token_hash, created_by, created_at, expires_at, revoked) VALUES (?1, ?2, ?3, ?4, 0)",
-        params![sha256(token.as_bytes()).to_vec(), admin_id, at, expires],
+        params![sha256(token.as_bytes()).to_vec(), user_id, at, expires],
     )?;
-    Ok((conn.last_insert_rowid(), token, expires))
+    let id = tx.last_insert_rowid();
+    tx.commit()?;
+    Ok((id, token, expires))
+}
+
+pub fn invite_quota(conn: &Connection, user_id: i64) -> Result<InviteQuota, AppErr> {
+    invite_quota_at(conn, user_id, now())
+}
+
+fn invite_quota_at(conn: &Connection, user_id: i64, at: i64) -> Result<InviteQuota, AppErr> {
+    let (used, reserved): (i64, i64) = conn.query_row(
+        "SELECT
+            COALESCE(SUM(CASE WHEN used_by IS NOT NULL THEN 1 ELSE 0 END), 0),
+            COALESCE(SUM(CASE WHEN used_by IS NULL AND revoked=0 AND expires_at > ?2 THEN 1 ELSE 0 END), 0)
+         FROM invites
+         WHERE created_by=?1",
+        params![user_id, at],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    let occupied = used.saturating_add(reserved);
+    Ok(InviteQuota {
+        limit: util::INVITE_LIMIT,
+        used,
+        reserved,
+        remaining: (util::INVITE_LIMIT - occupied).max(0),
+    })
 }
 
 pub fn revoke_invite(conn: &Connection, id: i64) -> Result<(), AppErr> {
-    conn.execute("UPDATE invites SET revoked=1 WHERE id=?1", [id])?;
+    conn.execute(
+        "UPDATE invites SET revoked=1 WHERE id=?1 AND used_by IS NULL AND revoked=0",
+        [id],
+    )?;
     if conn.changes() != 1 {
         return Err(AppErr::NotFound);
     }
     Ok(())
 }
 
-pub fn list_invites(conn: &Connection) -> Result<Vec<InviteRow>, AppErr> {
-    let mut stmt = conn.prepare(
-        "SELECT i.id, i.created_at, i.expires_at, i.revoked, c.username, u.username, i.used_at
+pub fn revoke_user_invite(conn: &Connection, user_id: i64, id: i64) -> Result<(), AppErr> {
+    conn.execute(
+        "UPDATE invites SET revoked=1 WHERE id=?1 AND created_by=?2 AND used_by IS NULL AND revoked=0",
+        params![id, user_id],
+    )?;
+    if conn.changes() != 1 {
+        return Err(AppErr::NotFound);
+    }
+    Ok(())
+}
+
+fn map_invite_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<InviteRow> {
+    Ok(InviteRow {
+        id: row.get(0)?,
+        created_at: row.get(1)?,
+        expires_at: row.get(2)?,
+        revoked: row.get::<_, i64>(3)? != 0,
+        creator: row.get(4)?,
+        used_by: row.get(5)?,
+        used_at: row.get(6)?,
+    })
+}
+
+const INVITE_LIST_SQL: &str =
+    "SELECT i.id, i.created_at, i.expires_at, i.revoked, c.username, u.username, i.used_at
          FROM invites i
          LEFT JOIN users c ON c.id=i.created_by
-         LEFT JOIN users u ON u.id=i.used_by
-         ORDER BY i.id DESC LIMIT 200",
+         LEFT JOIN users u ON u.id=i.used_by";
+
+pub fn list_invites(conn: &Connection) -> Result<Vec<InviteRow>, AppErr> {
+    let mut stmt = conn.prepare(&format!("{INVITE_LIST_SQL} ORDER BY i.id DESC LIMIT 200"))?;
+    let rows = stmt.query_map([], map_invite_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppErr::from)
+}
+
+pub fn list_user_invites(conn: &Connection, user_id: i64) -> Result<Vec<InviteRow>, AppErr> {
+    let mut stmt = conn.prepare(&format!(
+        "{INVITE_LIST_SQL} WHERE i.created_by=?1 ORDER BY i.id DESC LIMIT 50"
+    ))?;
+    let rows = stmt.query_map([user_id], map_invite_row)?;
+    rows.collect::<Result<Vec<_>, _>>().map_err(AppErr::from)
+}
+
+pub fn list_invitees(conn: &Connection, user_id: i64) -> Result<Vec<InviteeRow>, AppErr> {
+    let mut stmt = conn.prepare(
+        "SELECT id, uid, username, display_name, created_at
+         FROM users WHERE invited_by=?1
+         ORDER BY created_at ASC, id ASC LIMIT 100",
     )?;
-    let rows = stmt.query_map([], |row| {
-        Ok(InviteRow {
+    let rows = stmt.query_map([user_id], |row| {
+        Ok(InviteeRow {
             id: row.get(0)?,
-            created_at: row.get(1)?,
-            expires_at: row.get(2)?,
-            revoked: row.get::<_, i64>(3)? != 0,
-            creator: row.get(4)?,
-            used_by: row.get(5)?,
-            used_at: row.get(6)?,
+            uid: row.get(1)?,
+            username: row.get(2)?,
+            display_name: row.get(3)?,
+            created_at: row.get(4)?,
         })
     })?;
     rows.collect::<Result<Vec<_>, _>>().map_err(AppErr::from)
@@ -1899,11 +1995,7 @@ pub fn delete_user(conn: &mut Connection, user_id: i64) -> Result<Vec<String>, A
     tx.execute("DELETE FROM sessions WHERE user_id=?1", [user_id])?;
     tx.execute("DELETE FROM push_subs WHERE user_id=?1", [user_id])?;
     tx.execute(
-        "UPDATE invites SET created_by=NULL WHERE created_by=?1",
-        [user_id],
-    )?;
-    tx.execute(
-        "UPDATE invites SET used_by=NULL WHERE used_by=?1",
+        "UPDATE invites SET revoked=1 WHERE created_by=?1 AND used_by IS NULL AND revoked=0",
         [user_id],
     )?;
     tx.execute("DELETE FROM users WHERE id=?1", [user_id])?;
