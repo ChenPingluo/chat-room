@@ -36,6 +36,10 @@
     <path d="M14.5 6.5 8.5 12l6 5.5" />
   {:else if name === "close"}
     <path d="M7 7l10 10M17 7 7 17" />
+  {:else if name === "more"}
+    <circle cx="6" cy="12" r="1.35" fill="currentColor" stroke="none" />
+    <circle cx="12" cy="12" r="1.35" fill="currentColor" stroke="none" />
+    <circle cx="18" cy="12" r="1.35" fill="currentColor" stroke="none" />
   {:else if name === "info"}
     <circle cx="12" cy="12" r="7.5" />
     <path d="M12 11v5M12 8h.01" />

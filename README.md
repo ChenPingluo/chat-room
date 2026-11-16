@@ -9,10 +9,10 @@
 - 先发好友申请，对方同意后才能私聊，或被拉进群。
 - 群主可以改名、踢人、设置保留时间、转让群主。普通成员可以拉自己的好友进群，也可以自己退群。群上限 100 人。
 - 每个会话可以设置 1 小时、1 天、7 天或 30 天后自动删除。默认 30 天，不能更长。到期后消息和图片一起删除。
-- 可以撤回自己的消息（所有人看到“消息已撤回”，服务器上的正文和图片立即删除），也可以只从自己这边删除。
+- 可以撤回自己的消息（所有人看到“消息已撤回”，服务器上的正文和图片立即删除），也可以只从自己这边删除。这些操作在悬停条、右键菜单或长按菜单里，消息下面不再常驻按钮。
 - 上传的图片会重新编码成 JPEG、缩到最长边 2048 像素，并去掉 EXIF/GPS。原图不会写入磁盘。
 - 可选的浏览器推送只写“你有新消息”，不包含正文和发送者。
-- 界面是两栏的会话列表和聊天窗口，外观接近 Telegram Desktop / Telegram Web：实色背景、克制的蓝色、没有毛玻璃和漂浮色块。窄屏一次只显示列表或聊天。
+- 界面是两栏的会话列表和聊天窗口，外观接近 Telegram Desktop / Telegram Web：实色背景、克制的蓝色、没有毛玻璃和漂浮色块。窄屏一次只显示列表或聊天。消息操作接近 Telegram 与 Discord：桌面悬停出轻量操作条、右键打开菜单；触屏或窄屏长按打开操作表。
 
 ## 安全模型
 
@@ -83,6 +83,22 @@ chat-room check --data-dir /var/lib/chat-room
 8. 把 `deploy/Caddyfile` 里的域名改成你的，放到 Caddy 配置里并重载。只反代 `127.0.0.1:8080`。不要公开 8081。
 
 升级时重新执行 `install.sh`，然后 `sudo systemctl restart chat-room`。已存在的 systemd 单元不会被覆盖。主密钥和 `/var/lib/chat-room` 不要删。
+
+### 从 v0.2.2 升级到 v0.2.3
+
+这次只改了消息操作的交互，没有改数据库、接口、Cookie 和 systemd 单元。已有账号、登录状态和消息都会留着。不要删除 `/var/lib/chat-room` 和 `/etc/chat-room/master.key`。服务器上不需要编译，下载后替换二进制再重启即可。
+
+```sh
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.3/chat-room-v0.2.3-x86_64-linux-musl.tar.gz
+curl -LO https://github.com/ChenPingluo/chat-room/releases/download/v0.2.3/chat-room-v0.2.3-x86_64-linux-musl.tar.gz.sha256
+sha256sum -c chat-room-v0.2.3-x86_64-linux-musl.tar.gz.sha256
+tar -xzf chat-room-v0.2.3-x86_64-linux-musl.tar.gz
+cd chat-room-v0.2.3
+sudo ./deploy/install.sh
+sudo systemctl restart chat-room
+```
+
+仓库的 `release/` 目录仍保留 v0.2.1 的压缩包。v0.2.3 的静态包由打 `v0.2.3` 标签后的 GitHub Actions 编译上传。
 
 ### 从 v0.2.1 升级到 v0.2.2
 
