@@ -98,7 +98,7 @@ sudo ./deploy/install.sh
 sudo systemctl restart chat-room
 ```
 
-仓库的 `release/` 目录仍保留 v0.2.1 的压缩包。v0.2.4 的静态包由打 `v0.2.4` 标签后的 GitHub Actions 编译上传。这次拉取请求不打标签，也不往 `release/` 里放 musl 压缩包。
+同一个压缩包也放在仓库的 `release/` 目录里。已经克隆了仓库的话，可以直接用这个文件，不必再下载一次。打 `v0.2.4` 标签后，GitHub Actions 会上传仓库里这一份，而不是重新编译。
 
 ### 从 v0.2.2 升级到 v0.2.3
 
