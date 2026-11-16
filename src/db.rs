@@ -7,6 +7,7 @@ use crate::error::StartupError;
 const MIGRATIONS: &[&str] = &[
     include_str!("../migrations/001_init.sql"),
     include_str!("../migrations/002_indexes.sql"),
+    include_str!("../migrations/003_invite_hierarchy.sql"),
 ];
 
 pub fn open_db(path: &Path) -> Result<Connection, StartupError> {

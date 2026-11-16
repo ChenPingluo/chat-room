@@ -577,6 +577,15 @@ input.narrow { width: 96px; flex: none; }
   gap: 16px;
   padding: 20px 16px 32px;
 }
+.board.settings-board {
+  width: min(560px, 100%);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 16px 40px;
+}
+.board.settings-board .panel {
+  min-width: 0;
+}
 .panel, .stat, .table-wrap, .glass {
   background: var(--surface-solid);
   border: 1px solid var(--line);
@@ -607,6 +616,13 @@ input.narrow { width: 96px; flex: none; }
 }
 .check input { width: auto; }
 .check.on { border-color: var(--accent); background: var(--accent-soft); }
+.invite-url { display: block; }
+.invite-panel > button { align-self: flex-start; }
+.section-label {
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 600;
+}
 .avatar {
   position: relative;
   width: 42px;

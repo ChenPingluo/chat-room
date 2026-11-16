@@ -37,8 +37,8 @@ pub async fn serve(config: ServeConfig) -> Result<(), StartupError> {
     if !config.listen.ip().is_loopback() {
         tracing::warn!("聊天服务没有只监听本机，请确认前面有反向代理");
     }
-    let public = http::wrap(http::router()).with_state(Arc::clone(&app));
-    let admin = http::wrap(crate::admin::router()).with_state(Arc::clone(&app));
+    let public = http::wrap(Arc::clone(&app), http::router()).with_state(Arc::clone(&app));
+    let admin = http::wrap(Arc::clone(&app), crate::admin::router()).with_state(Arc::clone(&app));
     let listener = TcpListener::bind(config.listen)
         .await
         .map_err(StartupError::Io)?;

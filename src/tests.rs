@@ -225,7 +225,8 @@ async fn http_login_roundtrip() {
     opened.insecure_cookies = true;
     let app = Arc::new(opened);
     let token = make_invite(&app);
-    let router = crate::http::wrap(crate::http::router()).with_state(Arc::clone(&app));
+    let router =
+        crate::http::wrap(Arc::clone(&app), crate::http::router()).with_state(Arc::clone(&app));
     let response = router
         .clone()
         .oneshot(
@@ -352,7 +353,8 @@ async fn spa_guest_routes_serve_login_page() {
     let mut opened = App::open(dir.path(), "correct-passphrase", "https://chat.example").unwrap();
     opened.insecure_cookies = true;
     let app = Arc::new(opened);
-    let router = crate::http::wrap(crate::http::router()).with_state(Arc::clone(&app));
+    let router =
+        crate::http::wrap(Arc::clone(&app), crate::http::router()).with_state(Arc::clone(&app));
     for path in ["/", "/login", "/index.html"] {
         let response = router
             .clone()
@@ -392,6 +394,731 @@ async fn spa_guest_routes_serve_login_page() {
         assert!(body.contains("password"), "{path} 应包含密码框");
         assert!(body.contains("/entry.js"), "{path} 应带上静态登录脚本");
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn hierarchical_invites_quota_and_reservation() {
+    let dir = tempfile::tempdir().unwrap();
+    let mut opened = App::open(dir.path(), "correct-passphrase", "https://chat.example").unwrap();
+    opened.insecure_cookies = true;
+    let app = Arc::new(opened);
+    let router =
+        crate::http::wrap(Arc::clone(&app), crate::http::router()).with_state(Arc::clone(&app));
+
+    let seed = make_invite(&app);
+    let (alice, _) = app
+        .register(
+            &seed,
+            "Alice",
+            "password-alice",
+            "爱丽丝",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+
+    let bob_token = app
+        .with_db(|conn| {
+            let (_id, token, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+            Ok::<_, crate::error::AppErr>(token)
+        })
+        .unwrap();
+    let (bob, _) = app
+        .register(
+            &bob_token,
+            "Bob",
+            "password-bob-ok",
+            "鲍勃",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+    let carol_token = app
+        .with_db(|conn| {
+            let (_id, token, _) = crate::repo::create_invite(conn, bob.id, 7)?;
+            Ok::<_, crate::error::AppErr>(token)
+        })
+        .unwrap();
+    let (carol, _) = app
+        .register(
+            &carol_token,
+            "Carol",
+            "password-carol",
+            "卡罗",
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+
+    let invited_by = |user_id: i64| {
+        app.with_db(|conn| {
+            conn.query_row(
+                "SELECT invited_by FROM users WHERE id=?1",
+                [user_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .map_err(crate::error::AppErr::from)
+        })
+        .unwrap()
+    };
+    assert_eq!(invited_by(bob.id), Some(alice.id));
+    assert_eq!(invited_by(carol.id), Some(bob.id));
+    let alice_invitees = app
+        .with_db(|conn| crate::repo::list_invitees(conn, alice.id))
+        .unwrap();
+    assert_eq!(alice_invitees.len(), 1);
+    assert_eq!(alice_invitees[0].username, "Bob");
+    let bob_invitees = app
+        .with_db(|conn| crate::repo::list_invitees(conn, bob.id))
+        .unwrap();
+    assert_eq!(bob_invitees.len(), 1);
+    assert_eq!(bob_invitees[0].username, "Carol");
+    let carol_quota = app
+        .with_db(|conn| crate::repo::invite_quota(conn, carol.id))
+        .unwrap();
+    assert_eq!(carol_quota.limit, 5);
+    assert_eq!(carol_quota.used, 0);
+    assert_eq!(carol_quota.remaining, 5);
+
+    let pending_ids: Vec<i64> = (0..4)
+        .map(|_| {
+            app.with_db(|conn| {
+                let (id, _, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+                Ok::<_, crate::error::AppErr>(id)
+            })
+            .unwrap()
+        })
+        .collect();
+    let quota = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(quota.used, 1);
+    assert_eq!(quota.reserved, 4);
+    assert_eq!(quota.remaining, 0);
+    let sixth = app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7));
+    match sixth {
+        Err(crate::error::AppErr::Conflict(message)) => {
+            assert_eq!(message, "邀请名额已用完，每人最多成功邀请 5 人");
+        }
+        other => panic!("第六个邀请应被拒绝，实际是 {other:?}"),
+    }
+
+    app.with_db(|conn| crate::repo::revoke_invite(conn, pending_ids[0]))
+        .unwrap();
+    let after_revoke = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(after_revoke.reserved, 3);
+    assert_eq!(after_revoke.remaining, 1);
+    app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7))
+        .unwrap();
+
+    let expire_id = pending_ids[1];
+    app.with_db(|conn| {
+        conn.execute("UPDATE invites SET expires_at=1 WHERE id=?1", [expire_id])?;
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+    let after_expire = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(after_expire.remaining, 1);
+    app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7))
+        .unwrap();
+    app.with_db(|conn| {
+        conn.execute(
+            "UPDATE invites SET revoked=1 WHERE created_by=?1 AND used_by IS NULL AND revoked=0",
+            [alice.id],
+        )?;
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+
+    for n in 2..6 {
+        let token = app
+            .with_db(|conn| {
+                let (_, token, _) = crate::repo::create_invite(conn, alice.id, 7)?;
+                Ok::<_, crate::error::AppErr>(token)
+            })
+            .unwrap();
+        app.register(
+            &token,
+            &format!("User{n}"),
+            "password-user-ok",
+            &format!("用户{n}"),
+            "127.0.0.1",
+            "test",
+        )
+        .await
+        .unwrap();
+    }
+    let full = app
+        .with_db(|conn| crate::repo::invite_quota(conn, alice.id))
+        .unwrap();
+    assert_eq!(full.used, 5);
+    assert_eq!(full.remaining, 0);
+    match app.with_db(|conn| crate::repo::create_invite(conn, alice.id, 7)) {
+        Err(crate::error::AppErr::Conflict(message)) => {
+            assert_eq!(message, "邀请名额已用完，每人最多成功邀请 5 人");
+        }
+        other => panic!("第 6 次成功邀请应被拒绝，实际是 {other:?}"),
+    }
+
+    app.with_db(|conn| {
+        for n in 0..6 {
+            conn.execute(
+                "INSERT INTO invites (token_hash, created_by, created_at, expires_at, revoked, used_by, used_at)
+                 VALUES (?1, ?2, 10, 9999999999, 0, ?3, 10)",
+                rusqlite::params![unique_hash(n), bob.id, 10_000 + i64::from(n)],
+            )?;
+        }
+        Ok::<_, crate::error::AppErr>(())
+    })
+    .unwrap();
+    let over = app
+        .with_db(|conn| crate::repo::invite_quota(conn, bob.id))
+        .unwrap();
+    assert!(over.used > 5, "历史超额应保留，实际 used={}", over.used);
+    assert_eq!(over.remaining, 0);
+    assert!(app
+        .with_db(|conn| crate::repo::create_invite(conn, bob.id, 7))
+        .is_err());
+
+    let login = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(
+                    r#"{"username":"Carol","password":"password-carol"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let cookie = login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+
+    let created = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let created_body = created.into_body().collect().await.unwrap().to_bytes();
+    let created_json: serde_json::Value = serde_json::from_slice(&created_body).unwrap();
+    assert!(created_json["url"]
+        .as_str()
+        .unwrap()
+        .contains("/#/register/"));
+    assert_eq!(created_json["remaining"], 4);
+
+    let listed = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/invites")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let listed_body = listed.into_body().collect().await.unwrap().to_bytes();
+    let listed_json: serde_json::Value = serde_json::from_slice(&listed_body).unwrap();
+    assert_eq!(listed_json["limit"], 5);
+    assert_eq!(listed_json["reserved"], 1);
+
+    let alice_login = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/login")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(
+                    r#"{"username":"Alice","password":"password-alice"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    let alice_cookie = alice_login
+        .headers()
+        .get("set-cookie")
+        .unwrap()
+        .to_str()
+        .unwrap()
+        .split(';')
+        .next()
+        .unwrap()
+        .to_string();
+    let blocked = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("cookie", &alice_cookie)
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(blocked.status(), StatusCode::CONFLICT);
+    let blocked_body = blocked.into_body().collect().await.unwrap().to_bytes();
+    let blocked_json: serde_json::Value = serde_json::from_slice(&blocked_body).unwrap();
+    assert_eq!(
+        blocked_json["error"],
+        "邀请名额已用完，每人最多成功邀请 5 人"
+    );
+
+    let anon = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/api/invites")
+                .header("content-type", "application/json")
+                .header("host", "chat.example")
+                .body(Body::from(r#"{"days":7}"#))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anon.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn legitimate_login_invite_and_refresh_stay_under_limits() {
+    let (_dir, app, router) = http_app();
+    let token = make_invite(&app);
+    let (status, _, cookie) = send(
+        &router,
+        json_post(
+            "/api/register",
+            &format!(
+                r#"{{"token":"{token}","username":"Dana","password":"password-dana","display_name":"达娜"}}"#
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = cookie.expect("注册应设置 cookie");
+    for _ in 0..6 {
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/api/me")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/api/invites")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/api/conversations")
+                .header("cookie", &cookie)
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK);
+    }
+    let (status, created, _) = send(
+        &router,
+        authed_json_post("/api/invites", &cookie, r#"{"days":7}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["remaining"], 4);
+    let (status, created, _) = send(
+        &router,
+        authed_json_post("/api/invites", &cookie, r#"{"days":7}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(created["remaining"], 3);
+
+    let (logout_status, _, _) = send(
+        &router,
+        Request::builder()
+            .method("POST")
+            .uri("/api/logout")
+            .header("cookie", &cookie)
+            .header("host", "chat.example")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(logout_status, StatusCode::NO_CONTENT);
+    let (status, _, login_cookie) = send(
+        &router,
+        json_post(
+            "/api/login",
+            r#"{"username":"Dana","password":"password-dana"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(login_cookie.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn login_brute_force_locks_user_but_two_mistakes_still_succeed() {
+    let (_dir, app, router) = http_app();
+    let token = make_invite(&app);
+    app.register(
+        &token,
+        "Eve",
+        "password-eve-ok",
+        "伊芙",
+        "127.0.0.1",
+        "test",
+    )
+    .await
+    .unwrap();
+
+    for n in 0..crate::rate::LOGIN_USER {
+        let (status, body, _) = send(
+            &router,
+            json_post(
+                "/api/login",
+                &format!(r#"{{"username":"Eve","password":"wrong-password-{n}"}}"#),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "第 {} 次失败登录", n + 1);
+        assert_eq!(body["error"], "用户名或密码错误");
+    }
+    let (status, body, _) = send(
+        &router,
+        json_post(
+            "/api/login",
+            r#"{"username":"Eve","password":"password-eve-ok"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "操作太频繁，请稍后再试");
+
+    let (_dir, app, router) = http_app();
+    let token = make_invite(&app);
+    app.register(
+        &token,
+        "Eve",
+        "password-eve-ok",
+        "伊芙",
+        "127.0.0.1",
+        "test",
+    )
+    .await
+    .unwrap();
+    for _ in 0..2 {
+        let (status, _, _) = send(
+            &router,
+            json_post(
+                "/api/login",
+                r#"{"username":"Eve","password":"wrong-password"}"#,
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED);
+    }
+    let (status, _, cookie) = send(
+        &router,
+        json_post(
+            "/api/login",
+            r#"{"username":"Eve","password":"password-eve-ok"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cookie.is_some());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn register_spam_and_invite_guessing_are_limited() {
+    let (_dir, app, router) = http_app();
+    let valid = make_invite(&app);
+    let (status, _, cookie) = send(
+        &router,
+        json_post(
+            "/api/register",
+            &format!(
+                r#"{{"token":"{valid}","username":"Fay","password":"password-fay-ok","display_name":"费伊"}}"#
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cookie.is_some());
+
+    let (_dir, _app, router) = http_app();
+    let fake = "A".repeat(32);
+    for n in 0..crate::rate::REGISTER_IP {
+        let (status, body, _) = send(
+            &router,
+            json_post(
+                "/api/register",
+                &format!(
+                    r#"{{"token":"{fake}","username":"User{n}","password":"password-user-ok","display_name":"用户{n}"}}"#
+                ),
+            ),
+        )
+        .await;
+        assert_eq!(status, StatusCode::BAD_REQUEST, "第 {} 次无效邀请", n + 1);
+        assert_eq!(body["error"], "邀请无效");
+    }
+    let (status, body, _) = send(
+        &router,
+        json_post(
+            "/api/register",
+            &format!(
+                r#"{{"token":"{fake}","username":"Last","password":"password-last-ok","display_name":"最后"}}"#
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "操作太频繁，请稍后再试");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn invite_create_flood_is_limited_after_quota_is_freed() {
+    let (_dir, app, router) = http_app();
+    let token = make_invite(&app);
+    let (status, _, cookie) = send(
+        &router,
+        json_post(
+            "/api/register",
+            &format!(
+                r#"{{"token":"{token}","username":"Gus","password":"password-gus-ok","display_name":"格斯"}}"#
+            ),
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    let cookie = cookie.unwrap();
+
+    let mut ids = Vec::new();
+    for n in 0..crate::rate::INVITE_CREATE {
+        if ids.len() == 5 {
+            for id in ids.drain(..) {
+                let (status, _, _) = send(
+                    &router,
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/api/invites/{id}/revoke"))
+                        .header("cookie", &cookie)
+                        .header("host", "chat.example")
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await;
+                assert_eq!(status, StatusCode::NO_CONTENT, "作废邀请 {id}");
+            }
+        }
+        let (status, body, _) = send(
+            &router,
+            authed_json_post("/api/invites", &cookie, r#"{"days":7}"#),
+        )
+        .await;
+        assert_eq!(status, StatusCode::OK, "第 {} 次生成邀请", n + 1);
+        ids.push(body["id"].as_i64().unwrap());
+    }
+    let (status, body, _) = send(
+        &router,
+        authed_json_post("/api/invites", &cookie, r#"{"days":7}"#),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "操作太频繁，请稍后再试");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn unauthenticated_api_flood_is_limited_without_blocking_health() {
+    let (_dir, _app, router) = http_app();
+    for n in 0..crate::rate::API_IP {
+        let (status, _, _) = send(
+            &router,
+            Request::builder()
+                .uri("/api/me")
+                .header("host", "chat.example")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await;
+        assert_eq!(status, StatusCode::UNAUTHORIZED, "第 {} 次匿名请求", n + 1);
+    }
+    let (status, body, _) = send(
+        &router,
+        Request::builder()
+            .uri("/api/me")
+            .header("host", "chat.example")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::TOO_MANY_REQUESTS);
+    assert_eq!(body["error"], "操作太频繁，请稍后再试");
+    let (status, body, _) = send(
+        &router,
+        Request::builder()
+            .uri("/api/health")
+            .header("host", "chat.example")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(body["ok"], true);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn oversized_json_is_rejected_while_normal_login_still_works() {
+    let (_dir, app, router) = http_app();
+    let token = make_invite(&app);
+    app.register(
+        &token,
+        "Ivy",
+        "password-ivy-ok",
+        "艾薇",
+        "127.0.0.1",
+        "test",
+    )
+    .await
+    .unwrap();
+    let huge = format!(
+        r#"{{"username":"Ivy","password":"{}"}}"#,
+        "p".repeat(70_000)
+    );
+    let (status, body, _) = send(
+        &router,
+        Request::builder()
+            .method("POST")
+            .uri("/api/login")
+            .header("content-type", "application/json")
+            .header("content-length", huge.len().to_string())
+            .header("host", "chat.example")
+            .body(Body::from(huge))
+            .unwrap(),
+    )
+    .await;
+    assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(body["error"], "请求过大");
+    let (status, _, cookie) = send(
+        &router,
+        json_post(
+            "/api/login",
+            r#"{"username":"Ivy","password":"password-ivy-ok"}"#,
+        ),
+    )
+    .await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(cookie.is_some());
+}
+
+fn http_app() -> (tempfile::TempDir, Arc<App>, axum::Router) {
+    let dir = tempfile::tempdir().unwrap();
+    let mut opened = App::open(dir.path(), "correct-passphrase", "https://chat.example").unwrap();
+    opened.insecure_cookies = true;
+    let app = Arc::new(opened);
+    let router =
+        crate::http::wrap(Arc::clone(&app), crate::http::router()).with_state(Arc::clone(&app));
+    (dir, app, router)
+}
+
+fn json_post(uri: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("host", "chat.example")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+fn authed_json_post(uri: &str, cookie: &str, body: &str) -> Request<Body> {
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/json")
+        .header("cookie", cookie)
+        .header("host", "chat.example")
+        .body(Body::from(body.to_string()))
+        .unwrap()
+}
+
+async fn send(
+    router: &axum::Router,
+    req: Request<Body>,
+) -> (StatusCode, serde_json::Value, Option<String>) {
+    let response = router.clone().oneshot(req).await.unwrap();
+    let status = response.status();
+    let cookie = response
+        .headers()
+        .get("set-cookie")
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap().to_string());
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    let json = if bytes.is_empty() {
+        serde_json::Value::Null
+    } else {
+        serde_json::from_slice(&bytes).unwrap_or(serde_json::Value::Null)
+    };
+    (status, json, cookie)
+}
+
+fn unique_hash(n: u8) -> Vec<u8> {
+    let mut hash = vec![0u8; 32];
+    hash[0] = n;
+    hash[1] = 0xff;
+    hash
 }
 
 fn make_invite(app: &App) -> String {

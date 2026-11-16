@@ -21,6 +21,7 @@ use tokio::time::{interval, Duration};
 use crate::assets;
 use crate::error::AppErr;
 use crate::models::SessionUser;
+use crate::rate;
 use crate::state::App;
 use crate::util::{self, cookie};
 
@@ -101,6 +102,8 @@ pub fn router() -> Router<Arc<App>> {
             "/api/me/sessions/{id}",
             axum::routing::delete(revoke_session),
         )
+        .route("/api/invites", get(invites).post(create_invite))
+        .route("/api/invites/{id}/revoke", post(revoke_invite))
         .route("/api/users/search", post(search))
         .route("/api/friends", get(friends))
         .route("/api/friends/requests", get(requests).post(friend_request))
@@ -140,12 +143,39 @@ pub fn router() -> Router<Arc<App>> {
         .fallback(get(spa))
 }
 
-pub fn wrap(router: Router<Arc<App>>) -> Router<Arc<App>> {
+pub fn wrap(app: Arc<App>, router: Router<Arc<App>>) -> Router<Arc<App>> {
     router
         .layer(DefaultBodyLimit::max(26 * 1024 * 1024))
         .layer(middleware::from_fn(guard))
+        .layer(middleware::from_fn_with_state(app, api_flood))
         .layer(middleware::from_fn(security_headers))
         .layer(middleware::from_fn(access_log))
+}
+
+fn throttle(app: &App, key: String, limit: usize, window: Duration) -> Result<(), AppErr> {
+    if app.rate.allow(&key, limit, window) {
+        Ok(())
+    } else {
+        Err(AppErr::TooMany)
+    }
+}
+
+pub(crate) fn throttle_invite_create(app: &App, user_id: i64) -> Result<(), AppErr> {
+    throttle(
+        app,
+        format!("invite:create:{user_id}"),
+        rate::INVITE_CREATE,
+        rate::WINDOW_15MIN,
+    )
+}
+
+pub(crate) fn throttle_invite_revoke(app: &App, user_id: i64) -> Result<(), AppErr> {
+    throttle(
+        app,
+        format!("invite:revoke:{user_id}"),
+        rate::INVITE_REVOKE,
+        rate::WINDOW_15MIN,
+    )
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -201,16 +231,18 @@ async fn login(
     body: Body,
 ) -> Result<Response, AppErr> {
     let body: LoginBody = read_json(body).await?;
-    if !app.rate.allow(
-        &format!("login:user:{}", body.username.to_ascii_lowercase()),
-        8,
-        Duration::from_secs(900),
-    ) || !app
-        .rate
-        .allow(&format!("login:ip:{}", ip.0), 30, Duration::from_secs(900))
-    {
-        return Err(AppErr::TooMany);
-    }
+    throttle(
+        &app,
+        format!("login:user:{}", body.username.to_ascii_lowercase()),
+        rate::LOGIN_USER,
+        rate::WINDOW_15MIN,
+    )?;
+    throttle(
+        &app,
+        format!("login:ip:{}", ip.0),
+        rate::LOGIN_IP,
+        rate::WINDOW_15MIN,
+    )?;
     let (user, token) = app
         .login(
             &body.username,
@@ -234,6 +266,74 @@ async fn me(user: AppUser) -> Json<crate::models::UserOut> {
 }
 
 #[derive(Deserialize)]
+struct InviteBody {
+    days: Option<i64>,
+}
+
+async fn create_invite(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+    body: Body,
+) -> Result<Json<serde_json::Value>, AppErr> {
+    throttle_invite_create(&app, user.0.user.id)?;
+    let body: InviteBody = read_json(body).await?;
+    let (id, token, expires, quota) = app.with_db(|conn| {
+        let created = crate::repo::create_invite(conn, user.0.user.id, body.days.unwrap_or(7))?;
+        let quota = crate::repo::invite_quota(conn, user.0.user.id)?;
+        Ok((created.0, created.1, created.2, quota))
+    })?;
+    Ok(Json(json!({
+        "id": id,
+        "token": token,
+        "expires_at": expires,
+        "path": format!("/#/register/{token}"),
+        "url": app.invite_link(&token),
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
+    })))
+}
+
+async fn invites(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+) -> Result<Json<serde_json::Value>, AppErr> {
+    let (quota, rows, invitees) = app.with_db(|conn| {
+        Ok((
+            crate::repo::invite_quota(conn, user.0.user.id)?,
+            crate::repo::list_user_invites(conn, user.0.user.id)?,
+            crate::repo::list_invitees(conn, user.0.user.id)?,
+        ))
+    })?;
+    Ok(Json(json!({
+        "limit": quota.limit,
+        "used": quota.used,
+        "reserved": quota.reserved,
+        "remaining": quota.remaining,
+        "invites": rows.iter().map(|row| json!({
+            "id": row.id,
+            "created_at": row.created_at,
+            "expires_at": row.expires_at,
+            "revoked": row.revoked,
+            "used_by": row.used_by,
+            "used_at": row.used_at,
+        })).collect::<Vec<_>>(),
+        "invitees": invitees,
+    })))
+}
+
+async fn revoke_invite(
+    State(app): State<Arc<App>>,
+    user: AppUser,
+    Path(id): Path<i64>,
+) -> Result<StatusCode, AppErr> {
+    throttle_invite_revoke(&app, user.0.user.id)?;
+    app.with_db(|conn| crate::repo::revoke_user_invite(conn, user.0.user.id, id))?;
+    Ok(StatusCode::NO_CONTENT)
+}
+
+#[derive(Deserialize)]
 struct PasswordBody {
     old_password: String,
     new_password: String,
@@ -244,6 +344,12 @@ async fn change_password(
     user: AppUser,
     body: Body,
 ) -> Result<StatusCode, AppErr> {
+    throttle(
+        &app,
+        format!("pw:{}", user.0.user.id),
+        rate::PASSWORD,
+        rate::WINDOW_15MIN,
+    )?;
     let body: PasswordBody = read_json(body).await?;
     app.change_password(&user.0, &body.old_password, &body.new_password)
         .await?;
@@ -254,6 +360,12 @@ async fn totp_begin(
     State(app): State<Arc<App>>,
     user: AppUser,
 ) -> Result<Json<serde_json::Value>, AppErr> {
+    throttle(
+        &app,
+        format!("totp:begin:{}", user.0.user.id),
+        rate::TOTP_BEGIN,
+        rate::WINDOW_15MIN,
+    )?;
     let (secret, url) = app.totp_begin(&user.0.user)?;
     Ok(Json(json!({"secret": secret, "otpauth": url})))
 }
@@ -268,6 +380,12 @@ async fn totp_enable(
     user: AppUser,
     body: Body,
 ) -> Result<StatusCode, AppErr> {
+    throttle(
+        &app,
+        format!("totp:code:{}", user.0.user.id),
+        rate::TOTP_CODE,
+        rate::WINDOW_15MIN,
+    )?;
     let body: CodeBody = read_json(body).await?;
     app.totp_enable(&user.0.user, &body.code)?;
     Ok(StatusCode::NO_CONTENT)
@@ -284,6 +402,12 @@ async fn totp_disable(
     user: AppUser,
     body: Body,
 ) -> Result<StatusCode, AppErr> {
+    throttle(
+        &app,
+        format!("totp:disable:{}", user.0.user.id),
+        rate::PASSWORD,
+        rate::WINDOW_15MIN,
+    )?;
     let body: DisableTotpBody = read_json(body).await?;
     app.totp_disable(&user.0.user, &body.password, &body.code)
         .await?;
@@ -325,13 +449,12 @@ async fn search(
     body: Body,
 ) -> Result<Json<serde_json::Value>, AppErr> {
     let body: SearchBody = read_json(body).await?;
-    if !app.rate.allow(
-        &format!("search:{}", user.0.user.id),
-        20,
-        Duration::from_secs(60),
-    ) {
-        return Err(AppErr::TooMany);
-    }
+    throttle(
+        &app,
+        format!("search:{}", user.0.user.id),
+        rate::SEARCH,
+        rate::WINDOW_MINUTE,
+    )?;
     Ok(Json(json!({"users": app.search(user.0.user.id, &body.q)?})))
 }
 
@@ -360,13 +483,12 @@ async fn friend_request(
     body: Body,
 ) -> Result<Json<serde_json::Value>, AppErr> {
     let body: FriendBody = read_json(body).await?;
-    if !app.rate.allow(
-        &format!("friend:{}", user.0.user.id),
-        20,
-        Duration::from_secs(3600),
-    ) {
-        return Err(AppErr::TooMany);
-    }
+    throttle(
+        &app,
+        format!("friend:{}", user.0.user.id),
+        rate::FRIEND,
+        rate::WINDOW_HOUR,
+    )?;
     let accepted = app.friend_request(user.0.user.id, body.user_id)?;
     Ok(Json(json!({"accepted": accepted})))
 }
@@ -495,13 +617,12 @@ async fn post_message(
     body: Body,
 ) -> Result<Json<serde_json::Value>, AppErr> {
     let body: TextBody = read_json(body).await?;
-    if !app.rate.allow(
-        &format!("msg:{}", user.0.user.id),
-        120,
-        Duration::from_secs(60),
-    ) {
-        return Err(AppErr::TooMany);
-    }
+    throttle(
+        &app,
+        format!("msg:{}", user.0.user.id),
+        rate::MSG,
+        rate::WINDOW_MINUTE,
+    )?;
     Ok(Json(json!(app.post_text(
         user.0.user.id,
         id,
@@ -515,13 +636,12 @@ async fn upload_image(
     Path(id): Path<i64>,
     mut multipart: Multipart,
 ) -> Result<Json<serde_json::Value>, AppErr> {
-    if !app.rate.allow(
-        &format!("img:{}", user.0.user.id),
-        20,
-        Duration::from_secs(60),
-    ) {
-        return Err(AppErr::TooMany);
-    }
+    throttle(
+        &app,
+        format!("img:{}", user.0.user.id),
+        rate::IMG,
+        rate::WINDOW_MINUTE,
+    )?;
     let mut file = None;
     while let Some(field) = multipart
         .next_field()
@@ -692,14 +812,21 @@ async fn push_unsubscribe(
 
 async fn ws(
     user: AppUser,
+    ip: ClientIp,
     State(app): State<Arc<App>>,
     upgrade: WebSocketUpgrade,
-) -> impl IntoResponse {
+) -> Result<impl IntoResponse, AppErr> {
+    throttle(
+        &app,
+        format!("ws:ip:{}", ip.0),
+        rate::WS_IP,
+        rate::WINDOW_MINUTE,
+    )?;
     let user_id = user.0.user.id;
     let session_id = user.0.session_id;
-    upgrade
+    Ok(upgrade
         .max_message_size(4096)
-        .on_upgrade(move |socket| ws_loop(socket, app, user_id, session_id))
+        .on_upgrade(move |socket| ws_loop(socket, app, user_id, session_id)))
 }
 
 async fn ws_loop(mut socket: WebSocket, app: Arc<App>, user_id: i64, session_id: i64) {
@@ -833,6 +960,28 @@ fn client_ip(peer: Option<SocketAddr>, headers: &HeaderMap) -> String {
     peer_ip
         .map(|ip| ip.to_string())
         .unwrap_or_else(|| "local".into())
+}
+
+async fn api_flood(
+    State(app): State<Arc<App>>,
+    request: Request<Body>,
+    next: Next,
+) -> Result<Response, AppErr> {
+    let path = request.uri().path();
+    if path.starts_with("/api/") && path != "/api/health" {
+        let peer = request
+            .extensions()
+            .get::<ConnectInfo<SocketAddr>>()
+            .map(|info| info.0);
+        let ip = client_ip(peer, request.headers());
+        throttle(
+            &app,
+            format!("api:ip:{ip}"),
+            rate::API_IP,
+            rate::WINDOW_MINUTE,
+        )?;
+    }
+    Ok(next.run(request).await)
 }
 
 async fn guard(req: Request<Body>, next: Next) -> Response {
