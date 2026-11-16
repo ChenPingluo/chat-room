@@ -1,5 +1,4 @@
 use std::sync::Arc;
-use std::time::Duration;
 
 use axum::body::Body;
 use axum::extract::{Path, State};
@@ -12,6 +11,7 @@ use serde_json::json;
 
 use crate::error::AppErr;
 use crate::http::{self, AdminUser, ClientIp};
+use crate::rate;
 use crate::repo;
 use crate::state::App;
 use crate::util;
@@ -65,12 +65,13 @@ async fn login(
     let body: LoginBody = read_json(body).await?;
     if !app.rate.allow(
         &format!("admin:user:{}", body.username.to_ascii_lowercase()),
-        8,
-        Duration::from_secs(900),
-    ) || !app
-        .rate
-        .allow(&format!("admin:ip:{}", ip.0), 30, Duration::from_secs(900))
-    {
+        rate::LOGIN_USER,
+        rate::WINDOW_15MIN,
+    ) || !app.rate.allow(
+        &format!("admin:ip:{}", ip.0),
+        rate::LOGIN_IP,
+        rate::WINDOW_15MIN,
+    ) {
         return Err(AppErr::TooMany);
     }
     let agent = headers
@@ -266,6 +267,7 @@ async fn create_invite(
     user: AdminUser,
     body: Body,
 ) -> Result<Json<serde_json::Value>, AppErr> {
+    http::throttle_invite_create(&app, user.0.user.id)?;
     let body: InviteBody = read_json(body).await?;
     let (id, token, expires, quota) = app.with_db(|conn| {
         let created = repo::create_invite(conn, user.0.user.id, body.days.unwrap_or(7))?;
@@ -324,6 +326,7 @@ async fn revoke_invite(
     user: AdminUser,
     Path(id): Path<i64>,
 ) -> Result<StatusCode, AppErr> {
+    http::throttle_invite_revoke(&app, user.0.user.id)?;
     app.with_db(|conn| {
         repo::revoke_invite(conn, id)?;
         repo::audit(

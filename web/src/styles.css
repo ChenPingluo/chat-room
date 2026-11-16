@@ -577,6 +577,15 @@ input.narrow { width: 96px; flex: none; }
   gap: 16px;
   padding: 20px 16px 32px;
 }
+.board.settings-board {
+  width: min(560px, 100%);
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+  padding: 16px 16px 40px;
+}
+.board.settings-board .panel {
+  min-width: 0;
+}
 .panel, .stat, .table-wrap, .glass {
   background: var(--surface-solid);
   border: 1px solid var(--line);

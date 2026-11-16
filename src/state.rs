@@ -116,10 +116,11 @@ impl App {
         if token.len() < 20 || token.len() > 128 {
             return Err(AppErr::BadRequest("邀请无效"));
         }
-        if !self
-            .rate
-            .allow(&format!("register:ip:{ip}"), 30, Duration::from_secs(900))
-        {
+        if !self.rate.allow(
+            &format!("register:ip:{ip}"),
+            crate::rate::REGISTER_IP,
+            crate::rate::WINDOW_15MIN,
+        ) {
             return Err(AppErr::TooMany);
         }
         self.with_db(|conn| repo::invite_usable(conn, token))?;

@@ -1344,8 +1344,8 @@
             <span class="grow"></span>
             <button type="button" class="danger with-icon hide-mobile" onclick={logout}><Icon name="logout" size={18} /> 退出</button>
           </div>
-          <div class="board columns">
-            <section class="panel wide account">
+          <div class="board settings-board">
+            <section class="panel account">
               <div class="who">
                 {@render avatar(me.display_name, me.username, false, false)}
                 <div class="who-text">
@@ -1361,7 +1361,7 @@
               </div>
               <p class="error" role="alert">{error}</p>
             </section>
-            <section class="panel wide invite-panel">
+            <section class="panel invite-panel">
               <h2>邀请好友</h2>
               <p class="muted">任何注册用户都可以邀请别人。每人最多成功邀请 {inviteView.limit} 人；被邀请的人注册后也有自己的名额。</p>
               <div class="row">
@@ -1450,7 +1450,7 @@
               <button type="button" onclick={enablePush}>开启新消息提醒</button>
               <p class="muted">提醒里只有“你有新消息”，不包含内容和发送者。</p>
             </section>
-            <section class="panel wide">
+            <section class="panel">
               <h2>登录设备</h2>
               {#each sessions as session, index (session.id)}
                 <div class="person" style="--i: {Math.min(index, 10)}">
