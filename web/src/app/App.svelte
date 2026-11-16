@@ -5,6 +5,20 @@
   import ThemeSwitch from "../lib/ThemeSwitch.svelte";
   import { canonicalizeLocation, guestView, loginHref, loginUrl, parseRoute } from "../lib/route.js";
   import { getTheme, setTheme, subscribe } from "../lib/theme.js";
+  import {
+    ACTION_HIDE,
+    ACTION_RECALL,
+    LONG_PRESS_MS,
+    SHEET_MAX_WIDTH,
+    clickOpensMenu,
+    confirmCopy,
+    longPressMoved,
+    menuPosition,
+    messageActions,
+    prefersCoarsePointer,
+    shouldLongPress,
+    useSheetMenu,
+  } from "../lib/message-actions.js";
   import { avatarHue, avatarText, shortTime } from "../lib/ui.js";
 
   let me = $state(null);
@@ -49,6 +63,11 @@
   let chatEpoch = 0;
   let toastTimer;
   let stick = true;
+  let msgMenu = $state(null);
+  let msgConfirm = $state(null);
+  let pressOpened = false;
+  let press = null;
+  let hoverNode = null;
 
   let unreadTotal = $derived(conversations.reduce((sum, item) => sum + Number(item.unread || 0), 0));
   let visibleConversations = $derived.by(() => {
@@ -89,6 +108,7 @@
     sessions = [];
     found = [];
     preview = "";
+    closeMsgUi();
     pendingCount = 0;
     knownIncoming = 0;
     const current = socket;
@@ -143,6 +163,182 @@
   function noteScroll() {
     if (!scroller) return;
     stick = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 140;
+    closeMenu();
+    setHover(null);
+  }
+
+  function liveMessage(id) {
+    return messages.find((item) => item.id === Number(id));
+  }
+
+  function closeMenu() {
+    msgMenu = null;
+  }
+
+  function closeMsgUi() {
+    closeMenu();
+    msgConfirm = null;
+    clearPress();
+    setHover(null);
+  }
+
+  function setHover(node) {
+    if (hoverNode === node) return;
+    hoverNode?.classList.remove("is-hover");
+    hoverNode = node || null;
+    hoverNode?.classList.add("is-hover");
+  }
+
+  function clearPress() {
+    if (press?.timer) clearTimeout(press.timer);
+    press = null;
+  }
+
+  function sheetEnabled() {
+    return useSheetMenu(prefersCoarsePointer(window.matchMedia.bind(window)), window.innerWidth);
+  }
+
+  function openMenu(id, origin) {
+    const message = liveMessage(id);
+    const actions = message ? messageActions(message) : [];
+    if (!message || !actions.length) {
+      closeMenu();
+      return;
+    }
+    const sheet = origin.kind === "press" || sheetEnabled();
+    msgMenu = {
+      id,
+      actions,
+      origin,
+      pos: menuPosition({
+        x: origin.x,
+        y: origin.y,
+        viewportWidth: window.innerWidth,
+        viewportHeight: window.innerHeight,
+        menuWidth: 196,
+        menuHeight: 16 + actions.length * 42,
+        sheet,
+      }),
+    };
+  }
+
+  function requestAction(message, actionId) {
+    const live = liveMessage(message?.id);
+    if (!live) {
+      closeMsgUi();
+      return;
+    }
+    const allowed = messageActions(live).some((item) => item.id === actionId);
+    const copy = confirmCopy(actionId);
+    if (!allowed || !copy) {
+      closeMenu();
+      return;
+    }
+    closeMenu();
+    msgConfirm = { id: live.id, actionId, ...copy };
+  }
+
+  async function confirmAction() {
+    const pending = msgConfirm;
+    const message = pending ? liveMessage(pending.id) : null;
+    msgConfirm = null;
+    if (!pending || !message) return;
+    if (pending.actionId === ACTION_RECALL) await recall(message);
+    else if (pending.actionId === ACTION_HIDE) await hide(message);
+  }
+
+  function eventEl(event) {
+    const node = event.target;
+    return node?.nodeType === 1 ? node : node?.parentElement;
+  }
+
+  function eventMessageId(event) {
+    const node = eventEl(event)?.closest("[data-msg-id]");
+    if (!node || !scroller?.contains(node)) return 0;
+    return Number(node.dataset.msgId) || 0;
+  }
+
+  function onMsgPointerOver(event) {
+    if (window.innerWidth <= SHEET_MAX_WIDTH) return;
+    const article = eventEl(event)?.closest("article.msg");
+    if (article && scroller?.contains(article)) setHover(article);
+  }
+
+  function onMsgPointerOut(event) {
+    const next = event.relatedTarget;
+    const el = next?.nodeType === 1 ? next : next?.parentElement;
+    if (hoverNode && el && (hoverNode.contains(el) || el.closest?.(".msg-hoverbar"))) return;
+    setHover(null);
+  }
+
+  function onMsgPointerDown(event) {
+    if (event.button != null && event.button !== 0) return;
+    if (eventEl(event)?.closest(".msg-more, .msg-hoverbar, .msg-menu, .msg-confirm, .msg-tool")) return;
+    const id = eventMessageId(event);
+    if (!id || !shouldLongPress(event.pointerType, window.innerWidth)) return;
+    clearPress();
+    press = {
+      id,
+      x: event.clientX,
+      y: event.clientY,
+      pointerId: event.pointerId,
+      timer: setTimeout(() => {
+        if (!press || press.id !== id) return;
+        const current = press;
+        press = null;
+        pressOpened = true;
+        window.getSelection()?.removeAllRanges?.();
+        openMenu(current.id, { kind: "press", x: current.x, y: current.y });
+      }, LONG_PRESS_MS),
+    };
+  }
+
+  function onMsgPointerMove(event) {
+    if (!press || event.pointerId !== press.pointerId) return;
+    if (longPressMoved(press.x, press.y, event.clientX, event.clientY)) clearPress();
+  }
+
+  function onMsgPointerUp(event) {
+    if (press && event.pointerId === press.pointerId) clearPress();
+  }
+
+  function onMsgContextMenu(event) {
+    if (!scroller) return;
+    const el = eventEl(event);
+    if (!el || !scroller.contains(el)) return;
+    const id = eventMessageId(event);
+    if (!id) return;
+    event.preventDefault();
+    clearPress();
+    openMenu(id, { kind: "menu", x: event.clientX, y: event.clientY });
+  }
+
+  function onMsgClick(event) {
+    if (pressOpened) {
+      event.preventDefault();
+      pressOpened = false;
+      return;
+    }
+    const tool = eventEl(event)?.closest(".msg-tool");
+    if (tool) {
+      event.preventDefault();
+      const id = eventMessageId(event);
+      const message = liveMessage(id);
+      if (message && tool.dataset.action) requestAction(message, tool.dataset.action);
+      return;
+    }
+    if (clickOpensMenu(eventEl(event))) {
+      event.preventDefault();
+      const id = eventMessageId(event);
+      if (id) openMenu(id, { kind: "click", x: event.clientX, y: event.clientY });
+    }
+  }
+
+  function onDocPointerDown(event) {
+    const target = eventEl(event);
+    if (target?.closest(".msg-menu, .msg-confirm, .msg-more, .msg-hoverbar")) return;
+    closeMenu();
+    if (msgConfirm && !target?.closest(".msg-confirm")) msgConfirm = null;
   }
 
   async function copyValue(value, label) {
@@ -347,6 +543,7 @@
     view = "chat";
     stick = true;
     freshId = 0;
+    closeMsgUi();
     detail = null;
     messages = [];
     detail = await api(`/api/conversations/${id}`);
@@ -415,6 +612,7 @@
     await run(async () => {
       const updated = await api(`/api/messages/${message.id}/recall`, { method: "POST" });
       messages = messages.map((item) => (item.id === updated.id ? updated : item));
+      closeMsgUi();
     });
   }
 
@@ -422,6 +620,7 @@
     await run(async () => {
       await api(`/api/messages/${message.id}/hide`, { method: "POST" });
       messages = messages.filter((item) => item.id !== message.id);
+      closeMsgUi();
     });
   }
 
@@ -640,7 +839,9 @@
     });
     const onKey = (event) => {
       if (event.key !== "Escape") return;
-      if (preview) preview = "";
+      if (msgConfirm) msgConfirm = null;
+      else if (msgMenu) closeMenu();
+      else if (preview) preview = "";
       else if (info) info = false;
     };
     boot();
@@ -668,6 +869,8 @@
     };
     window.addEventListener("hashchange", onHash);
     window.addEventListener("keydown", onKey);
+    window.addEventListener("pointerdown", onDocPointerDown);
+    window.addEventListener("contextmenu", onMsgContextMenu);
     window.addEventListener("visibilitychange", onVisible);
     return () => {
       alive = false;
@@ -675,8 +878,11 @@
       clearInterval(timer);
       clearInterval(beat);
       clearTimeout(toastTimer);
+      clearPress();
       window.removeEventListener("hashchange", onHash);
       window.removeEventListener("keydown", onKey);
+      window.removeEventListener("pointerdown", onDocPointerDown);
+      window.removeEventListener("contextmenu", onMsgContextMenu);
       window.removeEventListener("visibilitychange", onVisible);
       socket?.close();
     };
@@ -692,6 +898,17 @@
 
 {#snippet badge(value)}
   {#if value > 0}<span class="count">{value > 99 ? "99+" : value}</span>{/if}
+{/snippet}
+
+{#snippet hoverActions(message)}
+  {@const actions = messageActions(message)}
+  {#if actions.length}
+    <div class="msg-hoverbar" role="toolbar" aria-label="消息操作">
+      {#each actions as action (action.id)}
+        <button type="button" class="msg-tool" class:danger={action.danger} data-action={action.id}>{action.label}</button>
+      {/each}
+    </div>
+  {/if}
 {/snippet}
 
 <svelte:boundary onerror={(err) => console.error(err)}>
@@ -843,15 +1060,39 @@
               </div>
               <button type="button" class="ghost" aria-expanded={info} onclick={toggleInfo}>{info ? "关闭" : "详情"}</button>
             </header>
-            <div class="messages" bind:this={scroller} onscroll={noteScroll}>
+            <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_static_element_interactions a11y_no_noninteractive_element_interactions -->
+            <div
+              class="messages"
+              class:menu-open={msgMenu || msgConfirm}
+              role="log"
+              aria-label="消息"
+              bind:this={scroller}
+              onscroll={noteScroll}
+              onpointerover={onMsgPointerOver}
+              onpointerout={onMsgPointerOut}
+              onpointerdown={onMsgPointerDown}
+              onpointermove={onMsgPointerMove}
+              onpointerup={onMsgPointerUp}
+              onpointercancel={onMsgPointerUp}
+              onclick={onMsgClick}
+            >
               {#each messages as message, index (message.id)}
                 {#if message.kind === "system"}
-                  <article class="system" class:fresh={message.id === freshId}>
+                  <article class="msg system" class:fresh={message.id === freshId} data-msg-id={message.id}>
                     <p>{message.recalled ? "消息已撤回" : message.body}</p>
-                    <button type="button" class="ghost" onclick={() => hide(message)}>删除</button>
+                    {@render hoverActions(message)}
+                    <button type="button" class="msg-more" aria-label="消息操作" data-msg-id={message.id}>
+                      <Icon name="more" size={16} />
+                    </button>
                   </article>
                 {:else}
-                  <article class="bubble" class:mine={message.mine} class:grouped={isGrouped(index)} class:fresh={message.id === freshId}>
+                  <article
+                    class="msg bubble"
+                    class:mine={message.mine}
+                    class:grouped={isGrouped(index)}
+                    class:fresh={message.id === freshId}
+                    data-msg-id={message.id}
+                  >
                     <header class="meta">
                       {#if !isGrouped(index)}<span>{message.sender_display_name}</span>{/if}
                       <time title={fmt(message.created_at)}>{shortTime(message.created_at) || fmt(message.created_at)}</time>
@@ -863,12 +1104,10 @@
                     {:else}
                       <p>{message.body}</p>
                     {/if}
-                    <div class="actions">
-                      {#if message.mine && !message.recalled && message.kind !== "system"}
-                        <button type="button" class="ghost" onclick={() => recall(message)}>撤回</button>
-                      {/if}
-                      <button type="button" class="ghost" onclick={() => hide(message)}>删除</button>
-                    </div>
+                    {@render hoverActions(message)}
+                    <button type="button" class="msg-more" aria-label="消息操作" data-msg-id={message.id}>
+                      <Icon name="more" size={16} />
+                    </button>
                   </article>
                 {/if}
               {/each}
@@ -1148,6 +1387,36 @@
 {/if}
 
 {#if toast}<p class="toast" role="status">{toast}</p>{/if}
+{#if msgMenu}
+  {#if msgMenu.pos.mode === "sheet"}
+    <button type="button" class="msg-sheet-shade" aria-label="关闭菜单" onclick={closeMenu}></button>
+  {/if}
+  <div
+    class="msg-menu"
+    class:sheet={msgMenu.pos.mode === "sheet"}
+    style={msgMenu.pos.mode === "menu" ? `top: ${msgMenu.pos.top}px; left: ${msgMenu.pos.left}px` : ""}
+    role="menu"
+    aria-label="消息操作"
+  >
+    {#each msgMenu.actions as action (action.id)}
+      <button type="button" class="msg-item" class:danger={action.danger} role="menuitem" onclick={() => requestAction(liveMessage(msgMenu.id), action.id)}>
+        {action.label}
+      </button>
+    {/each}
+  </div>
+{/if}
+{#if msgConfirm}
+  <div class="msg-overlay" role="presentation" onclick={() => (msgConfirm = null)}>
+    <div class="msg-confirm" role="dialog" tabindex="-1" aria-modal="true" aria-labelledby="msg-confirm-title" onpointerdown={(event) => event.stopPropagation()}>
+      <h2 id="msg-confirm-title">{msgConfirm.title}</h2>
+      <p>{msgConfirm.body}</p>
+      <div class="row">
+        <button type="button" class="ghost" onclick={() => (msgConfirm = null)}>取消</button>
+        <button type="button" class="danger" onclick={confirmAction}>{msgConfirm.confirm}</button>
+      </div>
+    </div>
+  </div>
+{/if}
 {#if preview}
   <div
     class="lightbox"
